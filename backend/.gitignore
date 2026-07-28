@@ -1,0 +1,2 @@
+# Root .gitignore handles shared Node/env/editor/cache rules.
+/generated/prisma

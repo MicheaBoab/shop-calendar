@@ -1,0 +1,143 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN    @map("admin")
+  EMPLOYEE @map("employee")
+}
+
+enum UserStatus {
+  ACTIVE   @map("active")
+  INACTIVE @map("inactive")
+}
+
+enum AppointmentStatus {
+  SCHEDULED @map("scheduled")
+  COMPLETED @map("completed")
+  CANCELLED @map("cancelled")
+}
+
+model User {
+  id                  String         @id @default(cuid())
+  username            String         @unique
+  passwordHash        String         @map("password_hash")
+  displayName         String         @map("display_name")
+  role                UserRole       @default(EMPLOYEE)
+  status              UserStatus     @default(ACTIVE)
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
+  deletedAt           DateTime?      @map("deleted_at")
+  employeeAppointments Appointment[] @relation("EmployeeAppointments")
+  createdAppointments Appointment[]  @relation("AppointmentCreatedBy")
+  updatedAppointments Appointment[]  @relation("AppointmentUpdatedBy")
+  auditLogs           AuditLog[]     @relation("ActorAuditLogs")
+  roleAssignments     UserRoleAssignment[]
+
+  @@map("users")
+}
+
+model Appointment {
+  id           String            @id @default(cuid())
+  employeeId   String            @map("employee_id")
+  startAt      DateTime          @map("start_at")
+  endAt        DateTime          @map("end_at")
+  phone        String
+  price        Int
+  customerName String?           @map("customer_name")
+  serviceName  String?           @map("service_name")
+  note         String?
+  status       AppointmentStatus @default(SCHEDULED)
+  createdById  String            @map("created_by")
+  updatedById  String            @map("updated_by")
+  createdAt    DateTime          @default(now()) @map("created_at")
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+  deletedAt    DateTime?         @map("deleted_at")
+  employee     User              @relation("EmployeeAppointments", fields: [employeeId], references: [id])
+  createdBy    User              @relation("AppointmentCreatedBy", fields: [createdById], references: [id])
+  updatedBy    User              @relation("AppointmentUpdatedBy", fields: [updatedById], references: [id])
+
+  @@index([employeeId, startAt, endAt])
+  @@index([startAt, endAt])
+  @@map("appointments")
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorUserId  String   @map("actor_user_id")
+  action       String
+  entityType   String   @map("entity_type")
+  entityId     String   @map("entity_id")
+  beforePayload Json?   @map("before_payload")
+  afterPayload Json?    @map("after_payload")
+  createdAt    DateTime @default(now()) @map("created_at")
+  actor        User     @relation("ActorAuditLogs", fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model RbacRole {
+  id              String               @id @default(cuid())
+  roleKey         String               @unique @map("role_key")
+  roleName        String               @map("role_name")
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+  rolePermissions RolePermission[]
+  userAssignments UserRoleAssignment[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id              String           @id @default(cuid())
+  permissionKey   String           @unique @map("permission_key")
+  permissionName  String           @map("permission_name")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String   @map("role_id")
+  permissionId String   @map("permission_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  role         RbacRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRoleAssignment {
+  userId     String   @map("user_id")
+  roleId     String   @map("role_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       RbacRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model SystemSetting {
+  id                  Int      @id @default(1)
+  calendarWindowStart String?  @map("calendar_window_start")
+  calendarWindowEnd   String?  @map("calendar_window_end")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}

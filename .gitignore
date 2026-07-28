@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+out/
+
+# Coverage
+coverage/
+*.lcov
+
+# Caches
+.cache/
+.parcel-cache/
+.vite/
+.eslintcache
+*.tsbuildinfo
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Temp files
+tmp/
+temp/
+*.tmp
+*.pid
+
+# Environment secrets (allow checked-in templates)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Editor/OS junk
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+
+# Local database and Prisma Studio artifacts
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+prisma/*.db
+prisma/*.db-journal
+backend/prisma/*.db
+backend/prisma/*.db-journal
+.prisma/studio
+
+# Keep Prisma migrations tracked
+!backend/prisma/migrations/
+!backend/prisma/migrations/**
