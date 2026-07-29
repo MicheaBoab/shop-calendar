@@ -282,7 +282,7 @@ describe('App interaction seams', () => {
     await waitFor(() => container.textContent?.includes('Create appointment') ?? false);
 
     const startDateInput = container.querySelector('input[aria-label="Start date in MM/DD/YYYY format"]') as HTMLInputElement | null;
-    const startTimeInput = container.querySelector('input[type="time"]') as HTMLInputElement | null;
+    const startTimeInput = findControlInLabel(container, 'Start time', 'input') as HTMLInputElement | null;
 
     expect(startDateInput?.value).toBe('07/30/2026');
     expect(startTimeInput?.value).toBe('14:30');
@@ -343,7 +343,7 @@ describe('App interaction seams', () => {
     await clickButton(container, 'Mock date click');
 
     const startDateInput = container.querySelector('input[aria-label="Start date in MM/DD/YYYY format"]') as HTMLInputElement | null;
-    const startTimeInput = container.querySelector('input[type="time"]') as HTMLInputElement | null;
+    const startTimeInput = findControlInLabel(container, 'Start time', 'input') as HTMLInputElement | null;
 
     await waitFor(() => (startTimeInput?.value ?? '') === '14:30');
     expect(startDateInput?.value).toBe('07/30/2026');
@@ -397,7 +397,7 @@ describe('App interaction seams', () => {
     await clickButton(container, 'Mock date click');
 
     const startDateInput = container.querySelector('input[aria-label="Start date in MM/DD/YYYY format"]') as HTMLInputElement | null;
-    const startTimeInput = container.querySelector('input[type="time"]') as HTMLInputElement | null;
+    const startTimeInput = findControlInLabel(container, 'Start time', 'input') as HTMLInputElement | null;
 
     await waitFor(() => (startTimeInput?.value ?? '') === '14:30');
 

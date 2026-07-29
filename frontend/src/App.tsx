@@ -13,6 +13,7 @@ import {
   formatDateForUsInput,
   formatWeekdayFromUsDateInput,
   isLocalDateTimeInPast,
+  parseFlexibleTimeInput,
   parseDurationMinutes,
   parseUsDateInput,
 } from './appointment-time';
@@ -192,14 +193,8 @@ const buildLocalDateTime = (dateValue: string, timeValue: string) => {
     return null;
   }
 
-  const timeMatch = /^(\d{2}):(\d{2})$/.exec(timeValue.trim());
-  if (!timeMatch) {
-    return null;
-  }
-
-  const hours = Number.parseInt(timeMatch[1], 10);
-  const minutes = Number.parseInt(timeMatch[2], 10);
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+  const parsedTime = parseFlexibleTimeInput(timeValue);
+  if (!parsedTime) {
     return null;
   }
 
@@ -207,8 +202,8 @@ const buildLocalDateTime = (dateValue: string, timeValue: string) => {
     parsedDate.getFullYear(),
     parsedDate.getMonth(),
     parsedDate.getDate(),
-    hours,
-    minutes,
+    parsedTime.hours,
+    parsedTime.minutes,
     0,
     0,
   );
@@ -1320,11 +1315,20 @@ function App() {
                       {t('editor.startTime')} <span className="required-indicator" aria-hidden="true">*</span>
                     </span>
                     <input
-                      type="time"
-                      lang="en-GB"
-                      step={1800}
+                      type="text"
+                      inputMode="text"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      aria-label={t('editor.startTime')}
+                      placeholder="14:30 / 2:30 PM / 下午2:30"
                       value={form.startTime}
                       onChange={(e) => setForm({ ...form, startTime: e.target.value })}
+                      onBlur={() => {
+                        const parsed = parseFlexibleTimeInput(form.startTime);
+                        if (parsed) {
+                          setForm((current) => ({ ...current, startTime: parsed.normalized }));
+                        }
+                      }}
                     />
                   </label>
                 </div>

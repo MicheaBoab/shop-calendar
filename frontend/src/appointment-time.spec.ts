@@ -9,6 +9,7 @@ import {
   formatWeekdayFromUsDateInput,
   isAlignedToMinuteGranularity,
   isLocalDateTimeInPast,
+  parseFlexibleTimeInput,
   parseUsDateInput,
   parseDurationMinutes,
   shiftUsDateInputByDays,
@@ -56,6 +57,33 @@ describe('parseDurationMinutes', () => {
     expect(parseDurationMinutes('-30')).toBeNull();
     expect(parseDurationMinutes('30.5')).toBeNull();
     expect(parseDurationMinutes('abc')).toBeNull();
+  });
+});
+
+describe('parseFlexibleTimeInput', () => {
+  it('parses 24-hour HH:mm inputs', () => {
+    expect(parseFlexibleTimeInput('09:30')).toEqual({ hours: 9, minutes: 30, normalized: '09:30' });
+    expect(parseFlexibleTimeInput('23:05')).toEqual({ hours: 23, minutes: 5, normalized: '23:05' });
+  });
+
+  it('parses English AM/PM inputs', () => {
+    expect(parseFlexibleTimeInput('2:30 PM')).toEqual({ hours: 14, minutes: 30, normalized: '14:30' });
+    expect(parseFlexibleTimeInput('12:00 AM')).toEqual({ hours: 0, minutes: 0, normalized: '00:00' });
+    expect(parseFlexibleTimeInput('12 PM')).toEqual({ hours: 12, minutes: 0, normalized: '12:00' });
+  });
+
+  it('parses Chinese 上午/下午 inputs', () => {
+    expect(parseFlexibleTimeInput('上午9:15')).toEqual({ hours: 9, minutes: 15, normalized: '09:15' });
+    expect(parseFlexibleTimeInput('下午2:30')).toEqual({ hours: 14, minutes: 30, normalized: '14:30' });
+    expect(parseFlexibleTimeInput('下午12:05')).toEqual({ hours: 12, minutes: 5, normalized: '12:05' });
+  });
+
+  it('returns null for invalid values', () => {
+    expect(parseFlexibleTimeInput('')).toBeNull();
+    expect(parseFlexibleTimeInput('24:00')).toBeNull();
+    expect(parseFlexibleTimeInput('13:00 PM')).toBeNull();
+    expect(parseFlexibleTimeInput('上午0:30')).toBeNull();
+    expect(parseFlexibleTimeInput('random')).toBeNull();
   });
 });
 

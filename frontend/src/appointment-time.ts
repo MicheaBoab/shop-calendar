@@ -112,6 +112,69 @@ export const parseDurationMinutes = (value: string) => {
   return minutes;
 };
 
+export interface ParsedFlexibleTimeInput {
+  hours: number;
+  minutes: number;
+  normalized: string;
+}
+
+export const parseFlexibleTimeInput = (value: string): ParsedFlexibleTimeInput | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalize = (hours: number, minutes: number) => ({
+    hours,
+    minutes,
+    normalized: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`,
+  });
+
+  const twentyFourHourMatch = /^(\d{1,2}):(\d{1,2})$/.exec(trimmed);
+  if (twentyFourHourMatch) {
+    const hours = Number.parseInt(twentyFourHourMatch[1], 10);
+    const minutes = Number.parseInt(twentyFourHourMatch[2], 10);
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+      return null;
+    }
+    return normalize(hours, minutes);
+  }
+
+  const meridiemMatch = /^(\d{1,2})(?::(\d{1,2}))?\s*([ap])\.?m?\.?$/i.exec(trimmed);
+  if (meridiemMatch) {
+    const rawHours = Number.parseInt(meridiemMatch[1], 10);
+    const minutes = meridiemMatch[2] ? Number.parseInt(meridiemMatch[2], 10) : 0;
+    const period = meridiemMatch[3].toUpperCase();
+    if (rawHours < 1 || rawHours > 12 || minutes < 0 || minutes > 59) {
+      return null;
+    }
+
+    let hours = rawHours % 12;
+    if (period === 'P') {
+      hours += 12;
+    }
+    return normalize(hours, minutes);
+  }
+
+  const chineseMeridiemMatch = /^(上午|下午)\s*(\d{1,2})(?::(\d{1,2}))?$/.exec(trimmed);
+  if (chineseMeridiemMatch) {
+    const period = chineseMeridiemMatch[1];
+    const rawHours = Number.parseInt(chineseMeridiemMatch[2], 10);
+    const minutes = chineseMeridiemMatch[3] ? Number.parseInt(chineseMeridiemMatch[3], 10) : 0;
+    if (rawHours < 1 || rawHours > 12 || minutes < 0 || minutes > 59) {
+      return null;
+    }
+
+    let hours = rawHours % 12;
+    if (period === '下午') {
+      hours += 12;
+    }
+    return normalize(hours, minutes);
+  }
+
+  return null;
+};
+
 export const computeEndFromDuration = (startAt: Date, durationMinutes: number) => {
   return new Date(startAt.getTime() + durationMinutes * 60 * 1000);
 };
