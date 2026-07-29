@@ -303,6 +303,19 @@ describe('App interaction seams', () => {
     await cleanupRender(root, container);
   });
 
+  it('renders selected appointment window in 24-hour format', async () => {
+    const { container, root } = await renderAndLogin('ADMIN', 1280);
+
+    await clickButton(container, 'Mock event click');
+    await waitFor(() => container.textContent?.includes('Update appointment') ?? false);
+
+    expect(container.textContent).toMatch(/\b\d{2}:\d{2} - \d{2}:\d{2}\b/);
+    expect(container.textContent).not.toContain('PM');
+    expect(container.textContent).not.toContain('AM');
+
+    await cleanupRender(root, container);
+  });
+
   it('shows employee cancel behavior while editing without admin danger class', async () => {
     const { container, root } = await renderAndLogin('EMPLOYEE', 1280);
 

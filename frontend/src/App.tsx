@@ -147,8 +147,9 @@ const isActiveStatus = (status: string) => status.trim().toUpperCase() === 'ACTI
 
 const formatAppointmentWindow = (startAt: string, endAt: string, locale: string) => {
   const timeFormatter = new Intl.DateTimeFormat(locale, {
-    hour: 'numeric',
+    hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
   });
   const start = new Date(startAt);
   const end = new Date(endAt);
@@ -216,8 +217,9 @@ const buildLocalDateTime = (dateValue: string, timeValue: string) => {
 
 const formatTimeOnly = (value: string, locale: string) => {
   const formatter = new Intl.DateTimeFormat(locale, {
-    hour: 'numeric',
+    hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
   });
   return formatter.format(new Date(value));
 };
@@ -233,8 +235,9 @@ const formatAgendaTimeRange = (startAt: string, endAt: string, locale: string) =
 
 const formatDateTimeForPreview = (value: Date, locale: string) => {
   const timeFormatter = new Intl.DateTimeFormat(locale, {
-    hour: 'numeric',
+    hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
   });
   return `${formatDateOnlyForDisplay(value, locale)} ${timeFormatter.format(value)}`;
 };
@@ -1318,6 +1321,7 @@ function App() {
                     </span>
                     <input
                       type="time"
+                      lang="en-GB"
                       step={1800}
                       value={form.startTime}
                       onChange={(e) => setForm({ ...form, startTime: e.target.value })}
@@ -1461,7 +1465,8 @@ function App() {
                   slotDuration="00:30:00"
                   snapDuration="00:30:00"
                   slotLabelInterval="01:00:00"
-                  slotLabelFormat={{ hour: 'numeric', meridiem: 'short' }}
+                  slotLabelFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
+                  eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
                   editable={true}
                   selectable={true}
                   selectMirror={true}
