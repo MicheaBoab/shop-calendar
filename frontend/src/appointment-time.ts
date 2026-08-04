@@ -118,11 +118,43 @@ export interface ParsedFlexibleTimeInput {
   normalized: string;
 }
 
-export const parseFlexibleTimeInput = (value: string): ParsedFlexibleTimeInput | null => {
+interface TimeInferenceWindow {
+  startMinutes: number;
+  endMinutes: number;
+}
+
+interface ParseFlexibleTimeOptions {
+  inferenceWindow?: TimeInferenceWindow;
+}
+
+const isWithinInferenceWindow = (minutes: number, window: TimeInferenceWindow) => {
+  if (window.startMinutes <= window.endMinutes) {
+    return minutes >= window.startMinutes && minutes <= window.endMinutes;
+  }
+
+  return minutes >= window.startMinutes || minutes <= window.endMinutes;
+};
+
+const inferHoursByWindow = (rawHours: number, minutes: number, window: TimeInferenceWindow) => {
+  if (rawHours < 1 || rawHours > 12) {
+    return null;
+  }
+
+  const candidateHours = rawHours === 12 ? [12, 0] : [rawHours, rawHours + 12];
+  const matched = candidateHours.find((hours) => {
+    const totalMinutes = (hours * 60) + minutes;
+    return isWithinInferenceWindow(totalMinutes, window);
+  });
+
+  return matched ?? null;
+};
+
+export const parseFlexibleTimeInput = (value: string, options?: ParseFlexibleTimeOptions): ParsedFlexibleTimeInput | null => {
   const trimmed = value.trim();
   if (!trimmed) {
     return null;
   }
+  const normalizedInput = trimmed.replace(/：/g, ':');
 
   const normalize = (hours: number, minutes: number) => ({
     hours,
@@ -130,46 +162,41 @@ export const parseFlexibleTimeInput = (value: string): ParsedFlexibleTimeInput |
     normalized: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`,
   });
 
-  const twentyFourHourMatch = /^(\d{1,2}):(\d{1,2})$/.exec(trimmed);
+  const twentyFourHourMatch = /^(\d{1,2}):(\d{1,2})$/.exec(normalizedInput);
   if (twentyFourHourMatch) {
     const hours = Number.parseInt(twentyFourHourMatch[1], 10);
     const minutes = Number.parseInt(twentyFourHourMatch[2], 10);
     if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
       return null;
     }
+
+    const inferredHours = options?.inferenceWindow
+      ? inferHoursByWindow(hours, minutes, options.inferenceWindow)
+      : null;
+
+    if (inferredHours !== null) {
+      return normalize(inferredHours, minutes);
+    }
+
     return normalize(hours, minutes);
   }
 
-  const meridiemMatch = /^(\d{1,2})(?::(\d{1,2}))?\s*([ap])\.?m?\.?$/i.exec(trimmed);
-  if (meridiemMatch) {
-    const rawHours = Number.parseInt(meridiemMatch[1], 10);
-    const minutes = meridiemMatch[2] ? Number.parseInt(meridiemMatch[2], 10) : 0;
-    const period = meridiemMatch[3].toUpperCase();
-    if (rawHours < 1 || rawHours > 12 || minutes < 0 || minutes > 59) {
+  const hourOnlyMatch = /^(\d{1,2})$/.exec(normalizedInput);
+  if (hourOnlyMatch) {
+    const rawHours = Number.parseInt(hourOnlyMatch[1], 10);
+    if (rawHours < 0 || rawHours > 23) {
       return null;
     }
 
-    let hours = rawHours % 12;
-    if (period === 'P') {
-      hours += 12;
-    }
-    return normalize(hours, minutes);
-  }
+    const inferredHours = options?.inferenceWindow
+      ? inferHoursByWindow(rawHours, 0, options.inferenceWindow)
+      : null;
 
-  const chineseMeridiemMatch = /^(上午|下午)\s*(\d{1,2})(?::(\d{1,2}))?$/.exec(trimmed);
-  if (chineseMeridiemMatch) {
-    const period = chineseMeridiemMatch[1];
-    const rawHours = Number.parseInt(chineseMeridiemMatch[2], 10);
-    const minutes = chineseMeridiemMatch[3] ? Number.parseInt(chineseMeridiemMatch[3], 10) : 0;
-    if (rawHours < 1 || rawHours > 12 || minutes < 0 || minutes > 59) {
-      return null;
+    if (inferredHours !== null) {
+      return normalize(inferredHours, 0);
     }
 
-    let hours = rawHours % 12;
-    if (period === '下午') {
-      hours += 12;
-    }
-    return normalize(hours, minutes);
+    return normalize(rawHours, 0);
   }
 
   return null;

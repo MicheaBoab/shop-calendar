@@ -272,6 +272,16 @@ describe('App interaction seams', () => {
     await cleanupRender(root, container);
   });
 
+  it('defaults to 3-day as the primary active view on desktop width', async () => {
+    const { container, root } = await renderAndLogin('ADMIN', 1280);
+
+    const threeDayControl = findButtonByLabel(container, '3-day');
+    expect(threeDayControl).not.toBeNull();
+    expect(threeDayControl?.className).toContain('active');
+
+    await cleanupRender(root, container);
+  });
+
   it('applies slot click autofill and exits editing mode back to create intent', async () => {
     const { container, root } = await renderAndLogin('ADMIN', 1280);
 

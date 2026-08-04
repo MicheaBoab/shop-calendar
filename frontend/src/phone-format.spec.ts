@@ -6,8 +6,8 @@ describe('normalizePhoneInput', () => {
     expect(normalizePhoneInput('(123) 456-7890')).toBe('1234567890');
   });
 
-  it('caps to 15 digits', () => {
-    expect(normalizePhoneInput('12345678901234567890')).toBe('123456789012345');
+  it('caps to 10 digits', () => {
+    expect(normalizePhoneInput('12345678901234567890')).toBe('1234567890');
   });
 
   it('supports a custom max digit cap', () => {
@@ -27,8 +27,8 @@ describe('formatPhoneForDisplay', () => {
     expect(formatPhoneForDisplay('1234567890')).toBe('(123)456-7890');
   });
 
-  it('keeps digits beyond 10 visible after a space', () => {
-    expect(formatPhoneForDisplay('123456789012345')).toBe('(123)456-7890 12345');
+  it('truncates digits beyond 10 in display', () => {
+    expect(formatPhoneForDisplay('123456789012345')).toBe('(123)456-7890');
   });
 
   it('returns empty string when no digits are present', () => {
