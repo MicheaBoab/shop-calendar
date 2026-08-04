@@ -6,12 +6,16 @@ import {
 } from './calendar-ui-logic';
 
 describe('getInitialCalendarViewForWidth', () => {
-  it('defaults to week view when viewport width is not available', () => {
-    expect(getInitialCalendarViewForWidth(undefined)).toBe('timeGridWeek');
+  it('defaults to 3-day view when viewport width is not available', () => {
+    expect(getInitialCalendarViewForWidth(undefined)).toBe('timeGridThreeDay');
   });
 
   it('uses 3-day view at or below mobile breakpoint', () => {
     expect(getInitialCalendarViewForWidth(960)).toBe('timeGridThreeDay');
+  });
+
+  it('uses 3-day view above mobile breakpoint', () => {
+    expect(getInitialCalendarViewForWidth(1280)).toBe('timeGridThreeDay');
   });
 });
 
@@ -25,8 +29,8 @@ describe('getPrimaryCalendarControl', () => {
 
   it('uses desktop label and view for non-mobile layout', () => {
     expect(getPrimaryCalendarControl(false)).toEqual({
-      label: 'Week',
-      view: 'timeGridWeek',
+      label: '3-day',
+      view: 'timeGridThreeDay',
     });
   });
 });

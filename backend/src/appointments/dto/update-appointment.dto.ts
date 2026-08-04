@@ -26,7 +26,7 @@ export class UpdateAppointmentDto {
   endAt?: string;
 
   @IsString()
-  @Matches(/^\d{10,15}$/)
+  @Matches(/^\d{10}$/)
   @IsOptional()
   phone?: string;
 

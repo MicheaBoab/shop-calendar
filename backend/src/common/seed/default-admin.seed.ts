@@ -21,10 +21,12 @@ export class DefaultAdminSeed {
       },
     });
 
-    if (existing) {
-      return existing;
-    }
+    const adminUser = existing ?? await this.createDefaultAdmin(username);
+    await this.ensurePendingAssignmentEmployee();
+    return adminUser;
+  }
 
+  private async createDefaultAdmin(username: string) {
     const password = process.env.DEFAULT_ADMIN_PASSWORD ?? 'admin123';
     const passwordHash = await bcrypt.hash(password, 10);
 
@@ -42,6 +44,31 @@ export class DefaultAdminSeed {
         displayName: true,
         role: true,
         status: true,
+      },
+    });
+  }
+
+  private async ensurePendingAssignmentEmployee() {
+    const username = process.env.PENDING_EMPLOYEE_USERNAME ?? 'pending_assignment';
+    const existing = await this.prismaService.user.findFirst({
+      where: { username, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (existing) {
+      return;
+    }
+
+    const password = process.env.PENDING_EMPLOYEE_PASSWORD ?? 'pending-assignment-disabled-login';
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    await this.prismaService.user.create({
+      data: {
+        username,
+        passwordHash,
+        displayName: 'Pending Assignment',
+        role: UserRole.EMPLOYEE,
+        status: UserStatus.ACTIVE,
       },
     });
   }

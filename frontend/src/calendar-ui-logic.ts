@@ -6,16 +6,16 @@ export const MOBILE_CALENDAR_BREAKPOINT_PX = 960;
 
 export const getInitialCalendarViewForWidth = (viewportWidth?: number): CalendarView => {
   if (viewportWidth === undefined) {
-    return 'timeGridWeek';
+    return 'timeGridThreeDay';
   }
 
-  return viewportWidth <= MOBILE_CALENDAR_BREAKPOINT_PX ? 'timeGridThreeDay' : 'timeGridWeek';
+  return viewportWidth <= MOBILE_CALENDAR_BREAKPOINT_PX ? 'timeGridThreeDay' : 'timeGridThreeDay';
 };
 
 export const getPrimaryCalendarControl = (isMobileCalendarLayout: boolean) => {
   return {
-    view: isMobileCalendarLayout ? 'timeGridThreeDay' : 'timeGridWeek',
-    label: isMobileCalendarLayout ? '3-day' : 'Week',
+    view: isMobileCalendarLayout ? 'timeGridThreeDay' : 'timeGridThreeDay',
+    label: isMobileCalendarLayout ? '3-day' : '3-day',
   } as const;
 };
 

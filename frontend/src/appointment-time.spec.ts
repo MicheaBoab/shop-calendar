@@ -64,18 +64,36 @@ describe('parseFlexibleTimeInput', () => {
   it('parses 24-hour HH:mm inputs', () => {
     expect(parseFlexibleTimeInput('09:30')).toEqual({ hours: 9, minutes: 30, normalized: '09:30' });
     expect(parseFlexibleTimeInput('23:05')).toEqual({ hours: 23, minutes: 5, normalized: '23:05' });
+    expect(parseFlexibleTimeInput('14：30')).toEqual({ hours: 14, minutes: 30, normalized: '14:30' });
   });
 
-  it('parses English AM/PM inputs', () => {
-    expect(parseFlexibleTimeInput('2:30 PM')).toEqual({ hours: 14, minutes: 30, normalized: '14:30' });
-    expect(parseFlexibleTimeInput('12:00 AM')).toEqual({ hours: 0, minutes: 0, normalized: '00:00' });
-    expect(parseFlexibleTimeInput('12 PM')).toEqual({ hours: 12, minutes: 0, normalized: '12:00' });
+  it('infers AM/PM for ambiguous 12-hour inputs when a business window is provided', () => {
+    const inferenceWindow = { startMinutes: 10 * 60, endMinutes: (20 * 60) + 30 };
+
+    expect(parseFlexibleTimeInput('2:30', { inferenceWindow })).toEqual({
+      hours: 14,
+      minutes: 30,
+      normalized: '14:30',
+    });
+    expect(parseFlexibleTimeInput('2', { inferenceWindow })).toEqual({
+      hours: 14,
+      minutes: 0,
+      normalized: '14:00',
+    });
+    expect(parseFlexibleTimeInput('10:15', { inferenceWindow })).toEqual({
+      hours: 10,
+      minutes: 15,
+      normalized: '10:15',
+    });
   });
 
-  it('parses Chinese 上午/下午 inputs', () => {
-    expect(parseFlexibleTimeInput('上午9:15')).toEqual({ hours: 9, minutes: 15, normalized: '09:15' });
-    expect(parseFlexibleTimeInput('下午2:30')).toEqual({ hours: 14, minutes: 30, normalized: '14:30' });
-    expect(parseFlexibleTimeInput('下午12:05')).toEqual({ hours: 12, minutes: 5, normalized: '12:05' });
+  it('rejects AM/PM and Chinese meridiem inputs', () => {
+    expect(parseFlexibleTimeInput('2:30 PM')).toBeNull();
+    expect(parseFlexibleTimeInput('12:00 AM')).toBeNull();
+    expect(parseFlexibleTimeInput('12 PM')).toBeNull();
+    expect(parseFlexibleTimeInput('上午9:15')).toBeNull();
+    expect(parseFlexibleTimeInput('下午2:30')).toBeNull();
+    expect(parseFlexibleTimeInput('下午12:05')).toBeNull();
   });
 
   it('returns null for invalid values', () => {

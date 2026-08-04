@@ -13,6 +13,7 @@ import {
   formatDateForUsInput,
   formatWeekdayFromUsDateInput,
   isLocalDateTimeInPast,
+  type ParsedFlexibleTimeInput,
   parseFlexibleTimeInput,
   parseDurationMinutes,
   parseUsDateInput,
@@ -129,6 +130,60 @@ const API_BASE_URL = resolveApiBaseUrl({
   hostname: typeof window !== 'undefined' ? window.location.hostname : undefined,
   protocol: typeof window !== 'undefined' ? window.location.protocol : undefined,
 });
+const AUTH_STORAGE_KEY = 'shop-calendar-auth';
+
+const isAuthResponse = (value: unknown): value is AuthResponse => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const data = value as Partial<AuthResponse>;
+  if (typeof data.accessToken !== 'string' || typeof data.refreshToken !== 'string' || typeof data.tokenType !== 'string') {
+    return false;
+  }
+
+  const user = data.user as Partial<UserSummary> | undefined;
+  return Boolean(
+    user
+    && typeof user.id === 'string'
+    && typeof user.username === 'string'
+    && typeof user.displayName === 'string'
+    && typeof user.role === 'string'
+    && typeof user.status === 'string',
+  );
+};
+
+const readStoredAuth = (): AuthResponse | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isAuthResponse(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const persistAuth = (auth: AuthResponse | null) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  if (auth) {
+    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(auth));
+    return;
+  }
+
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+};
+
 const createInitialForm = (): AppointmentFormState => {
   const today = new Date();
   return {
@@ -142,7 +197,28 @@ const createInitialForm = (): AppointmentFormState => {
     note: '',
   };
 };
-const EMPLOYEE_COLORS = ['#2563eb', '#0f766e', '#7c3aed', '#d97706', '#dc2626', '#0ea5e9'];
+const PENDING_EMPLOYEE_USERNAME = 'pending_assignment';
+const PENDING_EMPLOYEE_COLOR = '#64748b';
+const CALENDAR_EVENT_BACKGROUND_DARK = '#0f172a';
+const CALENDAR_EVENT_TEXT_LIGHT = '#f8fafc';
+const CALENDAR_EVENT_EMPLOYEE_TINT = 28;
+const CALENDAR_PENDING_EVENT_TINT = 20;
+
+const hashStringToHue = (value: string) => {
+  let hash = 2166136261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return Math.abs(hash) % 360;
+};
+
+const colorFromStableIdentifier = (identifier: string) => {
+  const hue = hashStringToHue(identifier);
+  return `hsl(${hue} 70% 56%)`;
+};
 
 const isActiveStatus = (status: string) => status.trim().toUpperCase() === 'ACTIVE';
 
@@ -183,7 +259,26 @@ const formatTimeOnlyForInput = (value: Date) => {
   return `${hours}:${minutes}`;
 };
 
-const buildLocalDateTime = (dateValue: string, timeValue: string) => {
+const parseClockToMinutes = (value: string) => {
+  const match = /^(\d{2}):(\d{2})/.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+
+  const hours = Number.parseInt(match[1], 10);
+  const minutes = Number.parseInt(match[2], 10);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+
+  return (hours * 60) + minutes;
+};
+
+const buildLocalDateTime = (
+  dateValue: string,
+  timeValue: string,
+  parseTime: (value: string) => ParsedFlexibleTimeInput | null = parseFlexibleTimeInput,
+) => {
   if (!dateValue || !timeValue) {
     return null;
   }
@@ -193,7 +288,7 @@ const buildLocalDateTime = (dateValue: string, timeValue: string) => {
     return null;
   }
 
-  const parsedTime = parseFlexibleTimeInput(timeValue);
+  const parsedTime = parseTime(timeValue);
   if (!parsedTime) {
     return null;
   }
@@ -260,7 +355,9 @@ const incrementUsDateInputByDays = (input: string, days: number) => {
 
 function App() {
   const { locale, setLocale, t } = useI18n();
-  const [auth, setAuth] = useState<AuthResponse | null>(null);
+  const initialStoredAuthRef = useRef<AuthResponse | null>(readStoredAuth());
+  const [auth, setAuth] = useState<AuthResponse | null>(() => initialStoredAuthRef.current);
+  const [isAuthBootstrapping, setIsAuthBootstrapping] = useState(() => initialStoredAuthRef.current !== null);
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
   const [form, setForm] = useState<AppointmentFormState>(() => createInitialForm());
@@ -292,6 +389,8 @@ function App() {
   const calendarRef = useRef<FullCalendar | null>(null);
   const sseConnectionRef = useRef<EventSource | null>(null);
   const refreshDebounceRef = useRef<number | null>(null);
+  const authRef = useRef<AuthResponse | null>(initialStoredAuthRef.current);
+  const refreshInFlightRef = useRef<Promise<AuthResponse | null> | null>(null);
 
   const calendarDayHeaderWeekdayFormatter = useMemo(
     () => new Intl.DateTimeFormat(locale, { weekday: 'short' }),
@@ -338,29 +437,85 @@ function App() {
         return current;
       }
 
-      return isMobileCalendarLayout ? 'timeGridThreeDay' : 'timeGridWeek';
+      return isMobileCalendarLayout ? 'timeGridThreeDay' : 'timeGridThreeDay';
     });
   }, [isMobileCalendarLayout]);
 
   const employeeOptions = useMemo(
-    () => users.filter((user) => isActiveStatus(user.status)),
+    () => users.filter((user) => isActiveStatus(user.status) && user.role === 'EMPLOYEE'),
     [users],
   );
 
-  const getEmployeeColor = (employeeId: string) => {
-    const index = employeeOptions.findIndex((user) => user.id === employeeId);
-    return EMPLOYEE_COLORS[index >= 0 ? index % EMPLOYEE_COLORS.length : 0] ?? EMPLOYEE_COLORS[0];
-  };
+  const pendingEmployee = useMemo(
+    () => employeeOptions.find((user) => user.username === PENDING_EMPLOYEE_USERNAME) ?? null,
+    [employeeOptions],
+  );
 
-  const getEmployeeName = (employeeId: string) => employeeOptions.find((user) => user.id === employeeId)?.displayName ?? t('overview.employeeFallback');
+  const assignableEmployeeOptions = useMemo(
+    () => employeeOptions.filter((user) => user.username !== PENDING_EMPLOYEE_USERNAME),
+    [employeeOptions],
+  );
+
+  const employeeColorMap = useMemo(() => {
+    const colorMap = new Map<string, string>();
+
+    for (const employee of employeeOptions) {
+      if (employee.username === PENDING_EMPLOYEE_USERNAME) {
+        colorMap.set(employee.id, PENDING_EMPLOYEE_COLOR);
+        continue;
+      }
+
+      // Prefer immutable user id; fallback to username/displayName for incomplete records.
+      const stableIdentifier = employee.id.trim() || employee.username.trim() || employee.displayName.trim() || 'employee-fallback';
+      colorMap.set(employee.id, colorFromStableIdentifier(stableIdentifier));
+    }
+
+    return colorMap;
+  }, [employeeOptions]);
+
+  const employeeNameMap = useMemo(() => {
+    const nameMap = new Map<string, string>();
+
+    for (const user of users) {
+      const normalizedDisplayName = user.username === PENDING_EMPLOYEE_USERNAME
+        ? t('editor.pendingAssignment')
+        : user.displayName;
+      nameMap.set(user.id, normalizedDisplayName);
+    }
+
+    return nameMap;
+  }, [users, t]);
+
+  const getEmployeeColor = useCallback((employeeId: string) => {
+    if (!employeeId.trim()) {
+      return PENDING_EMPLOYEE_COLOR;
+    }
+
+    const knownColor = employeeColorMap.get(employeeId);
+    if (knownColor) {
+      return knownColor;
+    }
+
+    return colorFromStableIdentifier(employeeId);
+  }, [employeeColorMap]);
+
+  const getEmployeeName = useCallback((employeeId: string) => {
+    return employeeNameMap.get(employeeId) ?? t('overview.employeeFallback');
+  }, [employeeNameMap, t]);
 
   const setNotice = (text: string, tone: MessageTone = 'info') => {
     setMessage(text);
     setMessageTone(tone);
   };
 
+  const applyAuthState = useCallback((nextAuth: AuthResponse | null) => {
+    authRef.current = nextAuth;
+    setAuth(nextAuth);
+    persistAuth(nextAuth);
+  }, []);
+
   const clearAuthState = useCallback(() => {
-    setAuth(null);
+    applyAuthState(null);
     setUsers([]);
     setAppointments([]);
     setForm(createInitialForm());
@@ -368,12 +523,92 @@ function App() {
     setAuditLogs([]);
     setAuditLogsTotal(0);
     setPasswordResetTargetUserId('');
-  }, []);
+  }, [applyAuthState]);
 
   const forceLogoutWithNotice = useCallback((notice: string) => {
     clearAuthState();
     setNotice(notice, 'error');
   }, [clearAuthState]);
+
+  const parseStartTimeInput = useCallback((value: string) => {
+    const startMinutes = parseClockToMinutes(calendarWindow.slotMinTime);
+    const endMinutes = parseClockToMinutes(calendarWindow.slotMaxTime);
+
+    if (startMinutes === null || endMinutes === null) {
+      return parseFlexibleTimeInput(value);
+    }
+
+    return parseFlexibleTimeInput(value, {
+      inferenceWindow: {
+        startMinutes,
+        endMinutes,
+      },
+    });
+  }, [calendarWindow.slotMinTime, calendarWindow.slotMaxTime]);
+
+  const refreshAuthSession = useCallback(async (refreshToken: string, showExpiredNotice = true) => {
+    if (refreshInFlightRef.current) {
+      return refreshInFlightRef.current;
+    }
+
+    const run = (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        });
+
+        const text = await response.text();
+        let parsed: unknown = null;
+        if (text) {
+          try {
+            parsed = JSON.parse(text) as unknown;
+          } catch {
+            parsed = null;
+          }
+        }
+
+        if (!response.ok || !isAuthResponse(parsed)) {
+          throw new Error(t('notices.sessionExpired'));
+        }
+
+        applyAuthState(parsed);
+        return parsed;
+      } catch {
+        clearAuthState();
+        if (showExpiredNotice) {
+          setNotice(t('notices.sessionExpired'), 'error');
+        }
+        return null;
+      } finally {
+        refreshInFlightRef.current = null;
+      }
+    })();
+
+    refreshInFlightRef.current = run;
+    return run;
+  }, [applyAuthState, clearAuthState, t]);
+
+  useEffect(() => {
+    const storedAuth = initialStoredAuthRef.current;
+    if (!storedAuth?.refreshToken) {
+      setIsAuthBootstrapping(false);
+      return;
+    }
+
+    let active = true;
+    void refreshAuthSession(storedAuth.refreshToken, false)
+      .finally(() => {
+        if (active) {
+          setIsAuthBootstrapping(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [refreshAuthSession]);
 
   const getDisplayError = (error: unknown, fallback: string) => {
     if (error instanceof Error && /conflict|already|overlap/i.test(error.message)) {
@@ -382,13 +617,13 @@ function App() {
     return error instanceof Error ? error.message : fallback;
   };
 
-  const fetchJson = async (path: string, init?: RequestInit) => {
+  const fetchJson = async (path: string, init?: RequestInit, canRetry = true): Promise<any> => {
     const headers: Record<string, string> = {};
     if (init?.body && !(init.body instanceof FormData)) {
       headers['Content-Type'] = 'application/json';
     }
-    if (auth?.accessToken) {
-      headers.Authorization = `Bearer ${auth.accessToken}`;
+    if (authRef.current?.accessToken) {
+      headers.Authorization = `Bearer ${authRef.current.accessToken}`;
     }
     const response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
@@ -403,10 +638,20 @@ function App() {
         parsed = { message: text };
       }
     }
-    if (response.status === 401 && auth?.accessToken) {
-      forceLogoutWithNotice(t('notices.sessionExpired'));
+    if (response.status === 401 && canRetry) {
+      const refreshToken = authRef.current?.refreshToken;
+      if (refreshToken) {
+        const refreshed = await refreshAuthSession(refreshToken);
+        if (refreshed?.accessToken) {
+          return fetchJson(path, init, false);
+        }
+      } else {
+        forceLogoutWithNotice(t('notices.sessionExpired'));
+      }
+
       throw new Error(t('notices.sessionExpired'));
     }
+
     if (!response.ok) {
       throw new Error(parsed?.message ?? t('errors.requestFailed'));
     }
@@ -532,7 +777,11 @@ function App() {
       if (!response.ok) {
         throw new Error(data?.message ?? t('notices.loginFailed'));
       }
-      setAuth(data);
+      if (!isAuthResponse(data)) {
+        throw new Error(t('notices.loginFailed'));
+      }
+
+      applyAuthState(data);
       setNotice(t('notices.signedInAs', { displayName: data.user.displayName }), 'success');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : t('notices.loginFailed'), 'error');
@@ -552,7 +801,9 @@ function App() {
       return;
     }
 
-    if (!form.employeeId || !form.startDate || !form.startTime || !form.phone) {
+    const selectedEmployeeId = form.employeeId || pendingEmployee?.id || '';
+
+    if (!selectedEmployeeId || !form.startDate || !form.startTime || !form.phone) {
       setNotice(t('notices.fillRequired'), 'error');
       return;
     }
@@ -568,7 +819,7 @@ function App() {
       return;
     }
 
-    if (!/^\d{10,15}$/.test(form.phone)) {
+    if (!/^\d{10}$/.test(form.phone)) {
       setNotice(t('notices.phoneInvalid'), 'error');
       return;
     }
@@ -578,7 +829,7 @@ function App() {
       return;
     }
 
-    const startAt = buildLocalDateTime(form.startDate, form.startTime);
+    const startAt = buildLocalDateTime(form.startDate, form.startTime, parseStartTimeInput);
     if (form.startDate && !parseUsDateInput(form.startDate)) {
       setNotice(t('notices.startDateInvalid'), 'error');
       return;
@@ -617,7 +868,7 @@ function App() {
     setNotice('');
     try {
       const payload = {
-        employeeId: form.employeeId,
+        employeeId: selectedEmployeeId,
         startAt: startAt.toISOString(),
         endAt: endAt.toISOString(),
         phone: form.phone,
@@ -657,7 +908,7 @@ function App() {
     const startAt = new Date(appointment.startAt);
     const endAt = new Date(appointment.endAt);
     setForm({
-      employeeId: appointment.employeeId,
+      employeeId: pendingEmployee && appointment.employeeId === pendingEmployee.id ? '' : appointment.employeeId,
       startDate: formatDateForUsInput(startAt),
       startTime: formatTimeOnlyForInput(startAt),
       durationMinutes: String(
@@ -939,7 +1190,7 @@ function App() {
 
   const durationPreview = useMemo(() => {
     const durationMinutes = parseDurationMinutes(form.durationMinutes);
-    const startAt = buildLocalDateTime(form.startDate, form.startTime);
+    const startAt = buildLocalDateTime(form.startDate, form.startTime, parseStartTimeInput);
 
     if (!startAt || durationMinutes === null) {
       return { text: t('editor.previewPlaceholder'), crossesDay: false };
@@ -952,7 +1203,7 @@ function App() {
       text: t('editor.previewDerived', { value: formatDateTimeForPreview(endAt, locale) }),
       crossesDay,
     };
-  }, [form.durationMinutes, form.startDate, form.startTime, locale, t]);
+  }, [form.durationMinutes, form.startDate, form.startTime, locale, parseStartTimeInput, t]);
 
   const canApplyMinusOneStartDate = useMemo(() => {
     const startDate = parseUsDateInput(form.startDate);
@@ -966,12 +1217,23 @@ function App() {
     return startDate.getTime() > today.getTime();
   }, [form.startDate]);
 
+  const appointmentByIdMap = useMemo(() => {
+    const idMap = new Map<string, AppointmentRecord>();
+
+    for (const appointment of appointments) {
+      idMap.set(appointment.id, appointment);
+    }
+
+    return idMap;
+  }, [appointments]);
+
   const selectedAppointmentContext = useMemo(() => {
     if (!editingId) {
       return null;
     }
-    return appointments.find((appointment) => appointment.id === editingId) ?? null;
-  }, [appointments, editingId]);
+
+    return appointmentByIdMap.get(editingId) ?? null;
+  }, [appointmentByIdMap, editingId]);
 
   useEffect(() => {
     if (!editingId) {
@@ -1025,11 +1287,16 @@ function App() {
 
   const manageableUsers = useMemo(() => {
     if (!auth) {
-      return users;
+      return users.filter((user) => user.username !== PENDING_EMPLOYEE_USERNAME);
     }
 
-    return users.filter((user) => user.id !== auth.user.id);
+    return users.filter((user) => user.id !== auth.user.id && user.username !== PENDING_EMPLOYEE_USERNAME);
   }, [users, auth]);
+
+  const passwordResetUsers = useMemo(
+    () => users.filter((user) => user.username !== PENDING_EMPLOYEE_USERNAME),
+    [users],
+  );
 
   const formatAuditPayloadPreview = useCallback((payload: unknown) => {
     if (!payload || typeof payload !== 'object') {
@@ -1066,14 +1333,21 @@ function App() {
     }
   }, [auth, loadAuditLogs, t]);
 
+  const filteredAppointments = useMemo(() => {
+    if (employeeFilter === 'all') {
+      return appointments;
+    }
+
+    return appointments.filter((appointment) => appointment.employeeId === employeeFilter);
+  }, [appointments, employeeFilter]);
+
   const todayAgendaAppointments = useMemo(() => {
     const now = new Date();
 
-    return appointments
-      .filter((appointment) => employeeFilter === 'all' || appointment.employeeId === employeeFilter)
+    return filteredAppointments
       .filter((appointment) => isSameLocalDate(new Date(appointment.startAt), now))
       .sort((left, right) => new Date(left.startAt).getTime() - new Date(right.startAt).getTime());
-  }, [appointments, employeeFilter]);
+  }, [filteredAppointments]);
 
   const todayAgendaByEmployee = useMemo(() => {
     const grouped = new Map<string, AppointmentRecord[]>();
@@ -1124,20 +1398,25 @@ function App() {
   }, []);
 
   const calendarEvents = useMemo<EventInput[]>(() => {
-    return appointments
-      .filter((appointment) => employeeFilter === 'all' || appointment.employeeId === employeeFilter)
+    return filteredAppointments
       .map((appointment) => {
         const employeeColor = getEmployeeColor(appointment.employeeId);
+        const isPendingAssignment = pendingEmployee?.id === appointment.employeeId;
         const titleParts = [getEmployeeName(appointment.employeeId), appointment.customerName ?? ''];
+        const backgroundColor = isPendingAssignment
+          ? `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_PENDING_EVENT_TINT}%, ${PENDING_EMPLOYEE_COLOR} ${CALENDAR_PENDING_EVENT_TINT}%)`
+          : `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_EVENT_EMPLOYEE_TINT}%, ${employeeColor} ${CALENDAR_EVENT_EMPLOYEE_TINT}%)`;
         return {
           id: appointment.id,
           title: titleParts.filter(Boolean).join(' • '),
           start: appointment.startAt,
           end: appointment.endAt,
-          backgroundColor: employeeColor,
+          backgroundColor,
           borderColor: employeeColor,
-          textColor: '#0f172a',
+          textColor: CALENDAR_EVENT_TEXT_LIGHT,
+          borderWidth: '1px',
           display: 'block',
+          classNames: [isPendingAssignment ? 'calendar-event-pending-assignment' : 'calendar-event-assigned'],
           extendedProps: {
             appointmentId: appointment.id,
             employeeId: appointment.employeeId,
@@ -1145,12 +1424,23 @@ function App() {
           },
         };
       });
-  }, [appointments, employeeFilter, employeeOptions]);
+  }, [filteredAppointments, getEmployeeColor, getEmployeeName, pendingEmployee]);
 
   const primaryCalendarControl = getPrimaryCalendarControl(isMobileCalendarLayout);
   const primaryCalendarControlLabel = primaryCalendarControl.view === 'timeGridThreeDay'
     ? t('calendar.viewThreeDay')
     : t('calendar.viewWeek');
+
+  if (isAuthBootstrapping) {
+    return (
+      <div className="app-shell">
+        <div className="card">
+          <h1>{t('app.title')}</h1>
+          <p>{t('login.signingIn')}</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!auth) {
     return (
@@ -1267,12 +1557,10 @@ function App() {
               ) : null}
               <form onSubmit={handleCreateOrUpdate} className="stack">
                 <label>
-                  <span className="field-label">
-                    {t('editor.employee')} <span className="required-indicator" aria-hidden="true">*</span>
-                  </span>
+                  <span className="field-label">{t('editor.employee')}</span>
                   <select value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })}>
-                    <option value="">{t('editor.selectEmployee')}</option>
-                    {employeeOptions.map((user) => (
+                    <option value="">{t('editor.pendingAssignment')}</option>
+                    {assignableEmployeeOptions.map((user) => (
                       <option key={user.id} value={user.id}>{user.displayName}</option>
                     ))}
                   </select>
@@ -1320,11 +1608,11 @@ function App() {
                       autoCapitalize="off"
                       autoCorrect="off"
                       aria-label={t('editor.startTime')}
-                      placeholder="14:30 / 2:30 PM / 下午2:30"
+                      placeholder="14:30 / 2:30 / 2"
                       value={form.startTime}
                       onChange={(e) => setForm({ ...form, startTime: e.target.value })}
                       onBlur={() => {
-                        const parsed = parseFlexibleTimeInput(form.startTime);
+                        const parsed = parseStartTimeInput(form.startTime);
                         if (parsed) {
                           setForm((current) => ({ ...current, startTime: parsed.normalized }));
                         }
@@ -1412,7 +1700,9 @@ function App() {
                   <select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)}>
                     <option value="all">{t('calendar.allEmployees')}</option>
                     {employeeOptions.map((user) => (
-                      <option key={user.id} value={user.id}>{user.displayName}</option>
+                      <option key={user.id} value={user.id}>
+                        {user.username === PENDING_EMPLOYEE_USERNAME ? t('editor.pendingAssignment') : user.displayName}
+                      </option>
                     ))}
                   </select>
                   <div className="toggle-row">
@@ -1430,7 +1720,7 @@ function App() {
                   {employeeOptions.map((user) => (
                     <div key={user.id} className="legend-item">
                       <span className="legend-swatch" style={{ backgroundColor: getEmployeeColor(user.id) }} />
-                      <span>{user.displayName}</span>
+                      <span>{user.username === PENDING_EMPLOYEE_USERNAME ? t('editor.pendingAssignment') : user.displayName}</span>
                     </div>
                   ))}
                 </div>
@@ -1452,6 +1742,10 @@ function App() {
                   initialDate={selectedDate}
                   headerToolbar={false}
                   views={{
+                    timeGridWeek: {
+                      slotEventOverlap: false,
+                      eventMinHeight: 22,
+                    },
                     timeGridThreeDay: {
                       type: 'timeGrid',
                       duration: { days: 3 },
@@ -1474,13 +1768,15 @@ function App() {
                   editable={true}
                   selectable={true}
                   selectMirror={true}
+                  progressiveEventRendering={true}
+                  rerenderDelay={40}
                   events={calendarEvents}
                   eventDrop={handleCalendarDrop}
                   eventResize={handleCalendarResize}
                   dateClick={handleDateClick}
                   datesSet={handleCalendarDatesSet}
                   eventClick={(info) => {
-                    const clicked = appointments.find((item) => item.id === info.event.id);
+                    const clicked = appointmentByIdMap.get(info.event.id);
                     if (clicked) {
                       handleEdit(clicked);
                     }
@@ -1594,7 +1890,11 @@ function App() {
                     <div className="appointment-heading">
                       <span className="employee-marker" style={{ backgroundColor: getEmployeeColor(appointment.employeeId) }} />
                       <div>
-                        <strong>{employee?.displayName ?? t('overview.employeeFallback')}</strong>
+                        <strong>
+                          {employee
+                            ? (employee.username === PENDING_EMPLOYEE_USERNAME ? t('editor.pendingAssignment') : employee.displayName)
+                            : t('overview.employeeFallback')}
+                        </strong>
                         <div className="appointment-time">{formatAppointmentWindow(appointment.startAt, appointment.endAt, locale)}</div>
                       </div>
                     </div>
@@ -1682,7 +1982,7 @@ function App() {
                   required
                 >
                   <option value="">{t('admin.selectUser')}</option>
-                  {users.map((user) => (
+                  {passwordResetUsers.map((user) => (
                     <option key={user.id} value={user.id}>{user.displayName} ({user.username})</option>
                   ))}
                 </select>

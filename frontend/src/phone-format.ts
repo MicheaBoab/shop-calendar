@@ -1,4 +1,4 @@
-const MAX_PHONE_DIGITS = 15;
+const MAX_PHONE_DIGITS = 10;
 
 export const normalizePhoneInput = (value: string, maxDigits: number = MAX_PHONE_DIGITS) => {
   const digitsOnly = value.replace(/\D/g, '');
