@@ -17,7 +17,7 @@ export class CreateAppointmentDto {
   endAt!: string;
 
   @IsString()
-  @Matches(/^\d{10,15}$/)
+  @Matches(/^\d{10}$/)
   phone!: string;
 
   @IsString()

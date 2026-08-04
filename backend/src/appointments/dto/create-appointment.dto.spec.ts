@@ -3,7 +3,7 @@ import { validate } from 'class-validator';
 import { CreateAppointmentDto } from './create-appointment.dto';
 
 describe('CreateAppointmentDto', () => {
-  it('accepts 10-15 digit phone and 2-decimal USD price', async () => {
+  it('accepts 10-digit phone and 2-decimal USD price', async () => {
     const dto = plainToInstance(CreateAppointmentDto, {
       employeeId: 'emp-1',
       startAt: '2026-07-28T15:00:00.000Z',
@@ -31,6 +31,20 @@ describe('CreateAppointmentDto', () => {
     const constraints = errors.flatMap((error) => Object.values(error.constraints ?? {}));
     expect(constraints.some((msg) => msg.includes('phone'))).toBe(true);
     expect(constraints.some((msg) => msg.includes('price'))).toBe(true);
+  });
+
+  it('rejects phone longer than 10 digits', async () => {
+    const dto = plainToInstance(CreateAppointmentDto, {
+      employeeId: 'emp-1',
+      startAt: '2026-07-28T15:00:00.000Z',
+      endAt: '2026-07-28T16:00:00.000Z',
+      phone: '31255512345',
+      price: '45.00',
+    });
+
+    const errors = await validate(dto);
+    const constraints = errors.flatMap((error) => Object.values(error.constraints ?? {}));
+    expect(constraints.some((msg) => msg.includes('phone'))).toBe(true);
   });
 
   it('rejects empty or whitespace employeeId', async () => {

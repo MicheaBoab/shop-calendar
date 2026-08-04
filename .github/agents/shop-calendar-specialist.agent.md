@@ -2,7 +2,7 @@
 name: Shop Calendar Specialist
 description: "Use when building or planning this salon/shop appointment scheduling calendar project, including frontend-backend architecture, FullCalendar integration, VPS deployment, RBAC, and conflict rules. 中文触发词: 预约排班, 日历, 全栈方案, VPS部署, FullCalendar, 需求澄清"
 argument-hint: "Describe the task, constraints, and what is already confirmed by the user"
-user-invocable: true
+user-invocable: false
 tools: [read, search, edit, execute, todo, web]
 ---
 You are the dedicated project agent for this workspace.

@@ -13,6 +13,8 @@ import { MoveAppointmentDto } from './dto/move-appointment.dto';
 import { UpdateAppointmentDto } from './dto/update-appointment.dto';
 import { AppointmentsEventsService } from './appointments-events.service';
 
+const PENDING_EMPLOYEE_USERNAME = process.env.PENDING_EMPLOYEE_USERNAME ?? 'pending_assignment';
+
 @Injectable()
 export class AppointmentsService {
 	constructor(
@@ -52,7 +54,9 @@ export class AppointmentsService {
 		const startAt = new Date(dto.startAt);
 		const endAt = new Date(dto.endAt);
 		this.validateTimeRange(startAt, endAt);
-		await this.assertNoTimeConflict(dto.employeeId, startAt, endAt);
+		if (!(await this.isPendingAssignmentEmployee(dto.employeeId))) {
+			await this.assertNoTimeConflict(dto.employeeId, startAt, endAt);
+		}
 
 		const appointment = await this.prismaService.appointment.create({
 			data: {
@@ -94,7 +98,9 @@ export class AppointmentsService {
 		const nextEmployeeId = dto.employeeId ?? existing.employeeId;
 
 		this.validateTimeRange(nextStart, nextEnd);
-		await this.assertNoTimeConflict(nextEmployeeId, nextStart, nextEnd, id);
+		if (!(await this.isPendingAssignmentEmployee(nextEmployeeId))) {
+			await this.assertNoTimeConflict(nextEmployeeId, nextStart, nextEnd, id);
+		}
 
 		const updated = await this.prismaService.appointment.update({
 			where: { id },
@@ -218,6 +224,19 @@ export class AppointmentsService {
 				'This time overlaps an existing appointment for the same employee. Please choose a different slot.',
 			);
 		}
+	}
+
+	private async isPendingAssignmentEmployee(employeeId: string) {
+		const user = await this.prismaService.user.findFirst({
+			where: {
+				id: employeeId,
+				username: PENDING_EMPLOYEE_USERNAME,
+				deletedAt: null,
+			},
+			select: { id: true },
+		});
+
+		return Boolean(user);
 	}
 
 	private validateTimeRange(startAt: Date, endAt: Date) {

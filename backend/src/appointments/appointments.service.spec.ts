@@ -22,6 +22,9 @@ const makeAppointment = (overrides: Record<string, unknown> = {}) => ({
 
 describe('AppointmentsService', () => {
   const prismaService = {
+    user: {
+      findFirst: jest.fn(),
+    },
     appointment: {
       findMany: jest.fn(),
       findFirst: jest.fn(),
@@ -46,6 +49,7 @@ describe('AppointmentsService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    prismaService.user.findFirst.mockResolvedValue(null);
   });
 
   it('allows employee to edit another employee appointment and writes full audit payload', async () => {
@@ -219,6 +223,25 @@ describe('AppointmentsService', () => {
     expect(result.id).toBe('appt-minute');
   expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenCalledWith('admin-1');
     expect(prismaService.appointment.findFirst).toHaveBeenCalled();
+    expect(prismaService.appointment.create).toHaveBeenCalled();
+  });
+
+  it('skips overlap checks for pending assignment employee', async () => {
+    const created = makeAppointment({ id: 'appt-pending' });
+    prismaService.user.findFirst.mockResolvedValueOnce({ id: 'pending-id' });
+    prismaService.appointment.create.mockResolvedValueOnce(created);
+
+    const result = await service.createAppointment({
+      employeeId: 'pending-id',
+      startAt: '2026-07-28T15:00:00.000Z',
+      endAt: '2026-07-28T16:00:00.000Z',
+      phone: '3125551234',
+      price: '25.00',
+      createdById: 'admin-1',
+    });
+
+    expect(result.id).toBe('appt-pending');
+    expect(prismaService.appointment.findFirst).not.toHaveBeenCalled();
     expect(prismaService.appointment.create).toHaveBeenCalled();
   });
 });
