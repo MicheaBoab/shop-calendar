@@ -1,4 +1,4 @@
-import { UserRole, UserStatus } from '@prisma/client';
+import { AppointmentStatus, UserRole, UserStatus } from '@prisma/client';
 import { UsersService } from './users.service';
 
 describe('UsersService staff color mapping', () => {
@@ -121,6 +121,8 @@ describe('UsersService staff color mapping', () => {
     expect(prismaService.appointment.updateMany).toHaveBeenCalledWith({
       where: {
         employeeId: 'employee-1',
+        status: AppointmentStatus.SCHEDULED,
+        deletedAt: null,
         startAt: { gt: now },
       },
       data: expect.objectContaining({

@@ -12,8 +12,7 @@ import { ListAppointmentsDto } from './dto/list-appointments.dto';
 import { MoveAppointmentDto } from './dto/move-appointment.dto';
 import { UpdateAppointmentDto } from './dto/update-appointment.dto';
 import { AppointmentsEventsService } from './appointments-events.service';
-
-const PENDING_EMPLOYEE_USERNAME = process.env.PENDING_EMPLOYEE_USERNAME ?? 'pending_assignment';
+import { getPendingAssignmentEmployeeUsername } from '../common/pending-assignment';
 
 @Injectable()
 export class AppointmentsService {
@@ -233,10 +232,11 @@ export class AppointmentsService {
 	}
 
 	private async isPendingAssignmentEmployee(employeeId: string) {
+		const pendingUsername = getPendingAssignmentEmployeeUsername();
 		const user = await this.prismaService.user.findFirst({
 			where: {
 				id: employeeId,
-				username: PENDING_EMPLOYEE_USERNAME,
+				username: pendingUsername,
 				deletedAt: null,
 			},
 			select: { id: true },
