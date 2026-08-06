@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import React, { act, useImperativeHandle } from 'react';
+import React, { act, useEffect, useImperativeHandle, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -7,6 +7,8 @@ import { I18nProvider } from './i18n/i18n';
 
 vi.mock('@fullcalendar/react', () => {
   const MockFullCalendar = React.forwardRef<any, any>((props, ref) => {
+    const calendarRootRef = useRef<HTMLDivElement | null>(null);
+
     useImperativeHandle(ref, () => ({
       getApi: () => ({
         getDate: () => new Date(2026, 6, 30, 10, 0, 0, 0),
@@ -16,9 +18,39 @@ vi.mock('@fullcalendar/react', () => {
       }),
     }));
 
+    useEffect(() => {
+      if (!calendarRootRef.current) {
+        return undefined;
+      }
+
+      const noteText = (globalThis as any).__TEST_CALENDAR_NOTE_TEXT ?? 'Color service note';
+      const isTruncated = Boolean((globalThis as any).__TEST_CALENDAR_NOTE_TRUNCATED);
+
+      const eventHost = document.createElement('div');
+      const noteElement = document.createElement('div');
+      noteElement.className = 'calendar-event-note';
+      noteElement.textContent = noteText;
+
+      Object.defineProperties(noteElement, {
+        clientWidth: { configurable: true, get: () => (isTruncated ? 64 : 120) },
+        scrollWidth: { configurable: true, get: () => (isTruncated ? 140 : 120) },
+        clientHeight: { configurable: true, get: () => (isTruncated ? 20 : 40) },
+        scrollHeight: { configurable: true, get: () => (isTruncated ? 44 : 40) },
+      });
+
+      eventHost.appendChild(noteElement);
+      calendarRootRef.current.appendChild(eventHost);
+      props.eventDidMount?.({ el: eventHost });
+
+      return () => {
+        props.eventWillUnmount?.({ el: eventHost });
+        eventHost.remove();
+      };
+    }, [props.eventDidMount, props.eventWillUnmount]);
+
     return React.createElement(
       'div',
-      { 'data-testid': 'mock-calendar' },
+      { 'data-testid': 'mock-calendar', ref: calendarRootRef },
       React.createElement(
         'button',
         {
@@ -56,6 +88,28 @@ class MockEventSource {
 }
 
 type TestRole = 'ADMIN' | 'EMPLOYEE';
+
+const setMockCalendarNoteState = (isTruncated: boolean, noteText = 'Color service note') => {
+  (globalThis as any).__TEST_CALENDAR_NOTE_TRUNCATED = isTruncated;
+  (globalThis as any).__TEST_CALENDAR_NOTE_TEXT = noteText;
+};
+
+const setMobilePointerMode = (isMobilePointer: boolean) => {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: vi.fn().mockImplementation(() => ({
+      matches: isMobilePointer,
+      media: '(hover: none), (pointer: coarse)',
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  });
+};
 
 const setViewportWidth = (width: number) => {
   Object.defineProperty(window, 'innerWidth', {
@@ -97,6 +151,12 @@ const clickButton = async (container: HTMLElement, label: string) => {
 
   await act(async () => {
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+};
+
+const clickElement = async (element: HTMLElement) => {
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
 };
 
@@ -256,6 +316,8 @@ describe('App interaction seams', () => {
     vi.restoreAllMocks();
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
     document.body.innerHTML = '';
+    setMockCalendarNoteState(false);
+    setMobilePointerMode(false);
   });
 
   afterEach(() => {
@@ -378,6 +440,75 @@ describe('App interaction seams', () => {
     const afterNextPrimaryControl = findButtonByLabel(container, '3-day');
     expect(afterNextPrimaryControl).not.toBeNull();
     expect(afterNextPrimaryControl?.className).toContain('active');
+
+    await cleanupRender(root, container);
+  });
+
+  it('shows mobile fixed note layer for truncated note content', async () => {
+    const longNote = 'Long mobile note details to verify fixed layer rendering and full content visibility.';
+    setMockCalendarNoteState(true, longNote);
+    setMobilePointerMode(true);
+    const { container, root } = await renderAndLogin('ADMIN', 800);
+
+    const noteElement = container.querySelector('.calendar-event-note') as HTMLElement | null;
+    expect(noteElement).not.toBeNull();
+
+    await clickElement(noteElement as HTMLElement);
+
+    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') !== null);
+    const tooltipContent = document.querySelector('.calendar-note-tooltip-content');
+    expect(tooltipContent?.textContent).toContain(longNote);
+
+    await cleanupRender(root, container);
+  });
+
+  it('closes mobile fixed note layer when clicking blank backdrop area', async () => {
+    setMockCalendarNoteState(true, 'Backdrop close test note');
+    setMobilePointerMode(true);
+    const { container, root } = await renderAndLogin('ADMIN', 800);
+
+    const noteElement = container.querySelector('.calendar-event-note') as HTMLElement | null;
+    expect(noteElement).not.toBeNull();
+    await clickElement(noteElement as HTMLElement);
+    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') !== null);
+
+    const backdrop = document.querySelector('.calendar-note-tooltip-backdrop') as HTMLElement | null;
+    expect(backdrop).not.toBeNull();
+    await clickElement(backdrop as HTMLElement);
+    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') === null);
+
+    await cleanupRender(root, container);
+  });
+
+  it('closes mobile fixed note layer when clicking close button', async () => {
+    setMockCalendarNoteState(true, 'Button close test note');
+    setMobilePointerMode(true);
+    const { container, root } = await renderAndLogin('ADMIN', 800);
+
+    const noteElement = container.querySelector('.calendar-event-note') as HTMLElement | null;
+    expect(noteElement).not.toBeNull();
+    await clickElement(noteElement as HTMLElement);
+    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') !== null);
+
+    const closeButton = document.querySelector('.calendar-note-tooltip-close') as HTMLElement | null;
+    expect(closeButton).not.toBeNull();
+    await clickElement(closeButton as HTMLElement);
+    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') === null);
+
+    await cleanupRender(root, container);
+  });
+
+  it('does not show mobile fixed note layer when note is not truncated', async () => {
+    setMockCalendarNoteState(false, 'Short note');
+    setMobilePointerMode(true);
+    const { container, root } = await renderAndLogin('ADMIN', 800);
+
+    const noteElement = container.querySelector('.calendar-event-note') as HTMLElement | null;
+    expect(noteElement).not.toBeNull();
+    await clickElement(noteElement as HTMLElement);
+
+    await flush();
+    expect(document.querySelector('.calendar-note-tooltip-layer')).toBeNull();
 
     await cleanupRender(root, container);
   });
