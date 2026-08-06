@@ -58,9 +58,12 @@ export class AppointmentsService {
 			await this.assertNoTimeConflict(dto.employeeId, startAt, endAt);
 		}
 
+		const employeeSnapshot = await this.getEmployeeSnapshot(dto.employeeId);
 		const appointment = await this.prismaService.appointment.create({
 			data: {
 				employeeId: dto.employeeId,
+				employeeDisplayName: employeeSnapshot.employeeDisplayName,
+				employeeColor: employeeSnapshot.employeeColor,
 				startAt,
 				endAt,
 				phone: dto.phone,
@@ -102,10 +105,13 @@ export class AppointmentsService {
 			await this.assertNoTimeConflict(nextEmployeeId, nextStart, nextEnd, id);
 		}
 
+		const employeeSnapshot = await this.getEmployeeSnapshot(nextEmployeeId);
 		const updated = await this.prismaService.appointment.update({
 			where: { id },
 			data: {
 				employeeId: nextEmployeeId,
+				employeeDisplayName: employeeSnapshot.employeeDisplayName ?? existing.employeeDisplayName ?? null,
+				employeeColor: employeeSnapshot.employeeColor ?? existing.employeeColor ?? null,
 				startAt: nextStart,
 				endAt: nextEnd,
 				phone: dto.phone ?? existing.phone,
@@ -239,6 +245,46 @@ export class AppointmentsService {
 		return Boolean(user);
 	}
 
+	private async getEmployeeSnapshot(employeeId: string) {
+		const user = await this.prismaService.user.findFirst({
+			where: { id: employeeId, deletedAt: null },
+			select: { displayName: true, username: true },
+		});
+
+		return {
+			employeeDisplayName: user?.displayName ?? user?.username ?? null,
+			employeeColor: user?.displayName ? await this.getStaffColor(user.displayName) : null,
+		};
+	}
+
+	private async getStaffColor(staffName: string) {
+		const normalizedStaffName = this.normalizeStaffName(staffName);
+		const existing = await this.prismaService.staffColorMap.findUnique({
+			where: { staffName: normalizedStaffName },
+		});
+		if (existing?.color) {
+			return existing.color;
+		}
+
+		return this.defaultColorForStaffName(normalizedStaffName);
+	}
+
+	private normalizeStaffName(staffName: string) {
+		const normalized = staffName.trim().toLowerCase();
+		return normalized || 'employee-fallback';
+	}
+
+	private defaultColorForStaffName(staffName: string) {
+		let hash = 2166136261;
+		for (let index = 0; index < staffName.length; index += 1) {
+			hash ^= staffName.charCodeAt(index);
+			hash = Math.imul(hash, 16777619);
+		}
+
+		const hue = Math.abs(hash) % 360;
+		return `hsl(${hue} 70% 56%)`;
+	}
+
 	private validateTimeRange(startAt: Date, endAt: Date) {
 		if (startAt >= endAt) {
 			throw new BadRequestException('startAt must be earlier than endAt');
@@ -283,6 +329,8 @@ export class AppointmentsService {
 		return {
 			id: appointment.id,
 			employeeId: appointment.employeeId,
+			employeeDisplayName: appointment.employeeDisplayName,
+			employeeColor: appointment.employeeColor,
 			startAt: appointment.startAt,
 			endAt: appointment.endAt,
 			phone: appointment.phone,

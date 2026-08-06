@@ -56,24 +56,26 @@ model StaffColorMap {
 }
 
 model Appointment {
-  id           String            @id @default(cuid())
-  employeeId   String            @map("employee_id")
-  startAt      DateTime          @map("start_at")
-  endAt        DateTime          @map("end_at")
-  phone        String
-  price        Int
-  customerName String?           @map("customer_name")
-  serviceName  String?           @map("service_name")
-  note         String?
-  status       AppointmentStatus @default(SCHEDULED)
-  createdById  String            @map("created_by")
-  updatedById  String            @map("updated_by")
-  createdAt    DateTime          @default(now()) @map("created_at")
-  updatedAt    DateTime          @updatedAt @map("updated_at")
-  deletedAt    DateTime?         @map("deleted_at")
-  employee     User              @relation("EmployeeAppointments", fields: [employeeId], references: [id])
-  createdBy    User              @relation("AppointmentCreatedBy", fields: [createdById], references: [id])
-  updatedBy    User              @relation("AppointmentUpdatedBy", fields: [updatedById], references: [id])
+  id                   String            @id @default(cuid())
+  employeeId           String            @map("employee_id")
+  employeeDisplayName  String?           @map("employee_display_name")
+  employeeColor        String?           @map("employee_color")
+  startAt              DateTime          @map("start_at")
+  endAt                DateTime          @map("end_at")
+  phone                String
+  price                Int
+  customerName         String?           @map("customer_name")
+  serviceName          String?           @map("service_name")
+  note                 String?
+  status               AppointmentStatus @default(SCHEDULED)
+  createdById          String            @map("created_by")
+  updatedById          String            @map("updated_by")
+  createdAt            DateTime          @default(now()) @map("created_at")
+  updatedAt            DateTime          @updatedAt @map("updated_at")
+  deletedAt            DateTime?         @map("deleted_at")
+  employee             User              @relation("EmployeeAppointments", fields: [employeeId], references: [id])
+  createdBy            User              @relation("AppointmentCreatedBy", fields: [createdById], references: [id])
+  updatedBy            User              @relation("AppointmentUpdatedBy", fields: [updatedById], references: [id])
 
   @@index([employeeId, startAt, endAt])
   @@index([startAt, endAt])

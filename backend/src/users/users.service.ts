@@ -163,6 +163,25 @@ export class UsersService {
 			},
 		});
 		const resolvedColor = await this.getStaffColor(existing.displayName ?? existing.username);
+		const pendingEmployee = await this.prismaService.user.findFirst({
+			where: { username: 'pending_assignment', deletedAt: null },
+			select: { id: true },
+		});
+		const now = new Date();
+
+		if (pendingEmployee) {
+			await this.prismaService.appointment.updateMany({
+				where: {
+					employeeId: id,
+					startAt: { gt: now },
+				},
+				data: {
+					employeeId: pendingEmployee.id,
+					employeeDisplayName: existing.displayName ?? existing.username,
+					employeeColor: resolvedColor,
+				},
+			});
+		}
 
 		await this.auditService.recordUserManagementChange({
 			actorUserId,
