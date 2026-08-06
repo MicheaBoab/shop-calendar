@@ -14,8 +14,8 @@ export class UsersService {
 		private readonly auditService: AuditService,
 	) {}
 
-	listUsers() {
-		return this.prismaService.user.findMany({
+	async listUsers() {
+		const users = await this.prismaService.user.findMany({
 			where: { deletedAt: null },
 			select: {
 				id: true,
@@ -28,6 +28,8 @@ export class UsersService {
 			},
 			orderBy: { createdAt: 'asc' },
 		});
+
+		return this.withStaffColors(users);
 	}
 
 	async createUser(dto: CreateUserDto, actorUserId: string) {
@@ -36,22 +38,39 @@ export class UsersService {
 		}
 
 		const passwordHash = await bcrypt.hash(dto.password, 10);
-		const created = await this.prismaService.user.create({
-			data: {
-				username: dto.username,
-				passwordHash,
-				displayName: dto.displayName ?? dto.username,
-				role: dto.role,
-			},
-			select: {
-				id: true,
-				username: true,
-				displayName: true,
-				role: true,
-				status: true,
-				createdAt: true,
-				updatedAt: true,
-			},
+		const displayName = dto.displayName ?? dto.username;
+		const staffName = this.normalizeStaffName(displayName);
+
+		const created = await this.prismaService.$transaction(async (tx) => {
+			const createdUser = await tx.user.create({
+				data: {
+					username: dto.username,
+					passwordHash,
+					displayName,
+					role: dto.role,
+				},
+				select: {
+					id: true,
+					username: true,
+					displayName: true,
+					role: true,
+					status: true,
+					createdAt: true,
+					updatedAt: true,
+				},
+			});
+
+			const resolvedColor = await this.getStaffColor(staffName);
+			const existingMapping = await tx.staffColorMap.findUnique({
+				where: { staffName },
+			});
+			if (!existingMapping) {
+				await tx.staffColorMap.create({
+					data: { staffName, color: resolvedColor },
+				});
+			}
+
+			return { ...createdUser, color: resolvedColor };
 		});
 
 		await this.auditService.recordUserManagementChange({
@@ -79,6 +98,7 @@ export class UsersService {
 				updatedAt: true,
 			},
 		});
+		const resolvedColor = await this.getStaffColor(existing.displayName ?? existing.username);
 
 		await this.auditService.recordUserManagementChange({
 			actorUserId,
@@ -88,7 +108,7 @@ export class UsersService {
 			afterPayload: this.toAuditPayload(updated),
 		});
 
-		return updated;
+		return { ...updated, color: resolvedColor };
 	}
 
 	async updateUserPassword(id: string, dto: UpdateUserPasswordDto, actorUserId: string) {
@@ -107,6 +127,7 @@ export class UsersService {
 				deletedAt: true,
 			},
 		});
+		const resolvedColor = await this.getStaffColor(existing.displayName ?? existing.username);
 
 		await this.auditService.recordUserManagementChange({
 			actorUserId,
@@ -116,7 +137,7 @@ export class UsersService {
 			afterPayload: this.toAuditPayload(updated),
 		});
 
-		return updated;
+		return { ...updated, color: resolvedColor };
 	}
 
 	async removeUser(id: string, actorUserId: string) {
@@ -141,6 +162,7 @@ export class UsersService {
 				deletedAt: true,
 			},
 		});
+		const resolvedColor = await this.getStaffColor(existing.displayName ?? existing.username);
 
 		await this.auditService.recordUserManagementChange({
 			actorUserId,
@@ -150,7 +172,7 @@ export class UsersService {
 			afterPayload: this.toAuditPayload(removed),
 		});
 
-		return removed;
+		return { ...removed, color: resolvedColor };
 	}
 
 	private async ensureUserExists(id: string) {
@@ -174,6 +196,41 @@ export class UsersService {
 		return user;
 	}
 
+	private async withStaffColors<T extends { username: string; displayName: string }>(users: T[]) {
+		return Promise.all(users.map(async (user) => {
+			const color = await this.getStaffColor(user.displayName ?? user.username);
+			return { ...user, color };
+		}));
+	}
+
+	private async getStaffColor(staffName: string) {
+		const normalizedStaffName = this.normalizeStaffName(staffName);
+		const existing = await this.prismaService.staffColorMap.findUnique({
+			where: { staffName: normalizedStaffName },
+		});
+		if (existing?.color) {
+			return existing.color;
+		}
+
+		return this.defaultColorForStaffName(normalizedStaffName);
+	}
+
+	private normalizeStaffName(staffName: string) {
+		const normalized = staffName.trim().toLowerCase();
+		return normalized || 'employee-fallback';
+	}
+
+	private defaultColorForStaffName(staffName: string) {
+		let hash = 2166136261;
+		for (let index = 0; index < staffName.length; index += 1) {
+			hash ^= staffName.charCodeAt(index);
+			hash = Math.imul(hash, 16777619);
+		}
+
+		const hue = Math.abs(hash) % 360;
+		return `hsl(${hue} 70% 56%)`;
+	}
+
 	private toAuditPayload(user: {
 		id: string;
 		username: string;
@@ -183,6 +240,7 @@ export class UsersService {
 		createdAt?: Date;
 		updatedAt?: Date;
 		deletedAt?: Date | null;
+		color?: string;
 	}) {
 		return {
 			id: user.id,
@@ -193,6 +251,7 @@ export class UsersService {
 			createdAt: user.createdAt,
 			updatedAt: user.updatedAt,
 			deletedAt: user.deletedAt,
+			color: user.color,
 		};
 	}
 }

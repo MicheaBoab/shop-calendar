@@ -72,6 +72,7 @@ interface UserRecord {
   displayName: string;
   role: string;
   status: string;
+  color?: string;
 }
 
 interface AppointmentFormState {
@@ -717,9 +718,9 @@ function App() {
         continue;
       }
 
-      // Prefer immutable user id; fallback to username/displayName for incomplete records.
+      const configuredColor = employee.color?.trim();
       const stableIdentifier = employee.id.trim() || employee.username.trim() || employee.displayName.trim() || 'employee-fallback';
-      colorMap.set(employee.id, colorFromStableIdentifier(stableIdentifier));
+      colorMap.set(employee.id, configuredColor || colorFromStableIdentifier(stableIdentifier));
     }
 
     return colorMap;
