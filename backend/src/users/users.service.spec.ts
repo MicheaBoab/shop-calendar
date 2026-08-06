@@ -15,6 +15,10 @@ describe('UsersService staff color mapping', () => {
         create: jest.fn(),
         update: jest.fn(),
       },
+      appointment: {
+        findMany: jest.fn(),
+        updateMany: jest.fn(),
+      },
       staffColorMap: {
         findUnique: jest.fn(),
         create: jest.fn(),
@@ -75,5 +79,57 @@ describe('UsersService staff color mapping', () => {
     expect(prismaService.staffColorMap.create).toHaveBeenCalledWith({
       data: { staffName: 'alice', color: 'hsl(17 70% 56%)' },
     });
+  });
+
+  it('reassigns only future appointments to pending assignment and leaves historical appointments untouched', async () => {
+    const now = new Date('2026-08-06T12:00:00.000Z');
+    jest.useFakeTimers().setSystemTime(now);
+
+    prismaService.user.findFirst.mockResolvedValueOnce({
+      id: 'employee-1',
+      username: 'alice',
+      displayName: 'Alice',
+      role: UserRole.EMPLOYEE,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deletedAt: null,
+    });
+    prismaService.user.findFirst.mockResolvedValueOnce({
+      id: 'pending-id',
+      username: 'pending_assignment',
+      displayName: 'Pending Assignment',
+      role: UserRole.EMPLOYEE,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deletedAt: null,
+    });
+    prismaService.user.update.mockResolvedValue({
+      id: 'employee-1',
+      username: 'alice',
+      displayName: 'Alice',
+      role: UserRole.EMPLOYEE,
+      status: UserStatus.INACTIVE,
+      updatedAt: now,
+      deletedAt: now,
+    });
+
+    await service.removeUser('employee-1', 'admin-1');
+
+    expect(prismaService.appointment.updateMany).toHaveBeenCalledTimes(1);
+    expect(prismaService.appointment.updateMany).toHaveBeenCalledWith({
+      where: {
+        employeeId: 'employee-1',
+        startAt: { gt: now },
+      },
+      data: expect.objectContaining({
+        employeeId: 'pending-id',
+        employeeDisplayName: 'Alice',
+        employeeColor: 'hsl(17 70% 56%)',
+      }),
+    });
+
+    jest.useRealTimers();
   });
 });

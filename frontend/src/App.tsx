@@ -55,6 +55,8 @@ interface AuthResponse {
 interface AppointmentRecord {
   id: string;
   employeeId: string;
+  employeeDisplayName?: string | null;
+  employeeColor?: string | null;
   startAt: string;
   endAt: string;
   phone: string;
@@ -746,6 +748,36 @@ function App() {
   const getEmployeeName = useCallback((employeeId: string) => {
     return employeeNameMap.get(employeeId) ?? t('overview.employeeFallback');
   }, [employeeNameMap, t]);
+
+  const isAppointmentTentative = useCallback((appointment: AppointmentRecord) => {
+    return new Date(appointment.startAt).getTime() > Date.now();
+  }, []);
+
+  const getAppointmentDisplayName = useCallback((appointment: AppointmentRecord) => {
+    if (isAppointmentTentative(appointment)) {
+      return t('editor.pendingAssignment');
+    }
+
+    const snapshotName = appointment.employeeDisplayName?.trim();
+    if (snapshotName) {
+      return snapshotName;
+    }
+
+    return getEmployeeName(appointment.employeeId);
+  }, [getEmployeeName, isAppointmentTentative, t]);
+
+  const getAppointmentColor = useCallback((appointment: AppointmentRecord) => {
+    if (isAppointmentTentative(appointment)) {
+      return PENDING_EMPLOYEE_COLOR;
+    }
+
+    const snapshotColor = appointment.employeeColor?.trim();
+    if (snapshotColor) {
+      return snapshotColor;
+    }
+
+    return getEmployeeColor(appointment.employeeId);
+  }, [getEmployeeColor, isAppointmentTentative]);
 
   const setNotice = (text: string, tone: MessageTone = 'info') => {
     setMessage(text);
@@ -1680,10 +1712,10 @@ function App() {
   const calendarEvents = useMemo<EventInput[]>(() => {
     return filteredAppointments
       .map((appointment) => {
-        const employeeColor = getEmployeeColor(appointment.employeeId);
-        const isPendingAssignment = pendingEmployee?.id === appointment.employeeId;
+        const employeeColor = getAppointmentColor(appointment);
+        const isPendingAssignment = isAppointmentTentative(appointment);
         const normalizedNote = appointment.note?.trim();
-        const titleParts = [getEmployeeName(appointment.employeeId), appointment.customerName ?? ''];
+        const titleParts = [getAppointmentDisplayName(appointment), appointment.customerName ?? ''];
         const backgroundColor = isPendingAssignment
           ? `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_PENDING_EVENT_TINT}%, ${PENDING_EMPLOYEE_COLOR} ${CALENDAR_PENDING_EVENT_TINT}%)`
           : `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_EVENT_EMPLOYEE_TINT}%, ${employeeColor} ${CALENDAR_EVENT_EMPLOYEE_TINT}%)`;
@@ -1701,7 +1733,7 @@ function App() {
           extendedProps: {
             appointmentId: appointment.id,
             employeeId: appointment.employeeId,
-            employeeName: getEmployeeName(appointment.employeeId),
+            employeeName: getAppointmentDisplayName(appointment),
             note: normalizedNote,
             remark: normalizedNote,
             description: normalizedNote,
@@ -1710,7 +1742,7 @@ function App() {
           },
         };
       });
-  }, [filteredAppointments, getEmployeeColor, getEmployeeName, pendingEmployee]);
+  }, [filteredAppointments, getAppointmentColor, getAppointmentDisplayName, isAppointmentTentative]);
 
   const primaryCalendarControl = getPrimaryCalendarControl(isMobileCalendarLayout);
   const primaryCalendarControlLabel = primaryCalendarControl.view === 'timeGridThreeDay'
@@ -1835,7 +1867,7 @@ function App() {
                 <div className="context-card">
                   <div className="context-title">{t('editor.selectedAppointment')}</div>
                   <div className="context-meta">
-                    <span><strong>{getEmployeeName(selectedAppointmentContext.employeeId)}</strong></span>
+                    <span><strong>{getAppointmentDisplayName(selectedAppointmentContext)}</strong></span>
                     <span>{t('overview.badgePhone', { value: selectedAppointmentContext.phone })}</span>
                     <span>{formatAppointmentWindow(selectedAppointmentContext.startAt, selectedAppointmentContext.endAt, locale)}</span>
                   </div>
@@ -2107,7 +2139,7 @@ function App() {
                       >
                         <div className="agenda-time">{formatAgendaTimeRange(appointment.startAt, appointment.endAt, locale)}</div>
                         <div className="agenda-meta">
-                          <span>{getEmployeeName(appointment.employeeId)}</span>
+                          <span>{getAppointmentDisplayName(appointment)}</span>
                           <span>{t('agenda.phone', { value: appointment.phone })}</span>
                         </div>
                       </button>
@@ -2165,25 +2197,22 @@ function App() {
               </div>
               <div className="summary-pill">
                 <span className="summary-label">{t('overview.next')}</span>
-                <strong>{todaySummary.nextAppointment ? `${formatTimeOnly(todaySummary.nextAppointment.startAt, locale)} • ${getEmployeeName(todaySummary.nextAppointment.employeeId)}` : t('overview.none')}</strong>
+                <strong>{todaySummary.nextAppointment ? `${formatTimeOnly(todaySummary.nextAppointment.startAt, locale)} • ${getAppointmentDisplayName(todaySummary.nextAppointment)}` : t('overview.none')}</strong>
               </div>
             </div>
           </div>
           <h3 className="section-title">{t('overview.todayAppointments')}</h3>
           <div className="appointment-list">
             {appointments.map((appointment) => {
-              const employee = users.find((user) => user.id === appointment.employeeId);
+              const displayName = getAppointmentDisplayName(appointment);
+              const accentColor = getAppointmentColor(appointment);
               return (
-                <div key={appointment.id} className="appointment-item" style={{ borderLeftColor: getEmployeeColor(appointment.employeeId) }}>
+                <div key={appointment.id} className="appointment-item" style={{ borderLeftColor: accentColor }}>
                   <div className="appointment-main">
                     <div className="appointment-heading">
-                      <span className="employee-marker" style={{ backgroundColor: getEmployeeColor(appointment.employeeId) }} />
+                      <span className="employee-marker" style={{ backgroundColor: accentColor }} />
                       <div>
-                        <strong>
-                          {employee
-                            ? (employee.username === PENDING_EMPLOYEE_USERNAME ? t('editor.pendingAssignment') : employee.displayName)
-                            : t('overview.employeeFallback')}
-                        </strong>
+                        <strong>{displayName}</strong>
                         <div className="appointment-time">{formatAppointmentWindow(appointment.startAt, appointment.endAt, locale)}</div>
                       </div>
                     </div>
