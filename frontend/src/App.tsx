@@ -492,10 +492,11 @@ const bindCalendarEventNoteTooltip = (noteElement: HTMLElement, noteText: string
 
   const showMobileTooltip = () => {
     if (!isMobilePointerMode() || !isCalendarNoteTruncated(noteElement)) {
-      return;
+      return false;
     }
 
     ensureTooltipLayer();
+    return true;
   };
 
   const onTouchStart = (event: TouchEvent) => {
@@ -507,8 +508,7 @@ const bindCalendarEventNoteTooltip = (noteElement: HTMLElement, noteText: string
     touchStartPoint = { x: touch.clientX, y: touch.clientY };
     clearPressTimer();
     pressTimerId = window.setTimeout(() => {
-      suppressClickToggle = true;
-      showMobileTooltip();
+      suppressClickToggle = showMobileTooltip();
     }, NOTE_TOOLTIP_LONG_PRESS_DELAY_MS);
   };
 
