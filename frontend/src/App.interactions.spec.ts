@@ -422,4 +422,45 @@ describe('App interaction seams', () => {
 
     await cleanupRender(root, container);
   });
+
+  it('keeps display name read-only and synced to username in admin create user form', async () => {
+    const { container, root, fetchMock } = await renderAndLogin('ADMIN', 1280);
+
+    await clickButton(container, 'Admin');
+
+    const usernameInput = findControlInLabel(container, 'Username', 'input') as HTMLInputElement | null;
+    const displayNameInput = findControlInLabel(container, 'Display name', 'input') as HTMLInputElement | null;
+    const passwordInput = findControlInLabel(container, 'Password', 'input') as HTMLInputElement | null;
+    const confirmPasswordInput = findControlInLabel(container, 'Confirm password', 'input') as HTMLInputElement | null;
+
+    expect(usernameInput).not.toBeNull();
+    expect(displayNameInput).not.toBeNull();
+    expect(passwordInput).not.toBeNull();
+    expect(confirmPasswordInput).not.toBeNull();
+
+    await setControlValue(usernameInput as HTMLInputElement, 'new.employee');
+    expect((displayNameInput as HTMLInputElement).readOnly).toBe(true);
+    expect((displayNameInput as HTMLInputElement).value).toBe('new.employee');
+
+    await setControlValue(passwordInput as HTMLInputElement, 'secret123');
+    await setControlValue(confirmPasswordInput as HTMLInputElement, 'secret123');
+    await clickButton(container, 'Create user');
+
+    const createUserCall = fetchMock.mock.calls.find((call) => {
+      const url = String(call[0]);
+      const method = ((call[1] as RequestInit | undefined)?.method ?? 'GET').toUpperCase();
+      return url.includes('/users') && method === 'POST';
+    });
+
+    expect(createUserCall).toBeDefined();
+
+    const payload = JSON.parse(String((createUserCall?.[1] as RequestInit | undefined)?.body ?? '{}')) as {
+      username?: string;
+      displayName?: string;
+    };
+    expect(payload.username).toBe('new.employee');
+    expect(payload.displayName).toBe('new.employee');
+
+    await cleanupRender(root, container);
+  });
 });

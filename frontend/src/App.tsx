@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react';
 import FullCalendar from '@fullcalendar/react';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin, { DateClickArg } from '@fullcalendar/interaction';
-import type { DatesSetArg, EventInput } from '@fullcalendar/core';
+import type { DatesSetArg, EventContentArg, EventInput, EventMountArg } from '@fullcalendar/core';
 import { resolveApiBaseUrl } from './api-base-url';
 import {
   computeDurationBetweenMinutes,
@@ -93,6 +93,13 @@ interface CalendarWindowResponse {
 interface CalendarWindowFormState {
   slotMinTime: string;
   slotMaxTime: string;
+}
+
+interface AdminCreateUserFormState {
+  username: string;
+  password: string;
+  confirmPassword: string;
+  displayName: string;
 }
 
 interface AuditLogRecord {
@@ -353,6 +360,231 @@ const incrementUsDateInputByDays = (input: string, days: number) => {
   return formatDateForUsInput(next);
 };
 
+const EVENT_NOTE_KEYS = ['note', 'remark', 'description', 'memo', 'comment'] as const;
+
+const createInitialAdminCreateUserForm = (): AdminCreateUserFormState => ({
+  username: '',
+  password: '',
+  confirmPassword: '',
+  displayName: '',
+});
+
+const readEventNoteFromRecord = (record: Record<string, unknown> | null | undefined) => {
+  if (!record) {
+    return null;
+  }
+
+  for (const key of EVENT_NOTE_KEYS) {
+    const candidate = record[key];
+    if (typeof candidate === 'string') {
+      const normalized = candidate.trim();
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return null;
+};
+
+const resolveCalendarEventNote = (eventArg: EventContentArg['event']) => {
+  const eventRecord = eventArg as unknown as Record<string, unknown>;
+  const extendedPropsRecord = eventArg.extendedProps as unknown as Record<string, unknown> | undefined;
+
+  return readEventNoteFromRecord(extendedPropsRecord) ?? readEventNoteFromRecord(eventRecord);
+};
+
+const NOTE_TOOLTIP_LONG_PRESS_DELAY_MS = 450;
+const NOTE_TOOLTIP_MOVE_CANCEL_THRESHOLD_PX = 10;
+type CalendarNoteTooltipCleanup = () => void;
+
+const isCalendarNoteTruncated = (element: HTMLElement) => {
+  const horizontalOverflow = element.scrollWidth - element.clientWidth > 1;
+  const verticalOverflow = element.scrollHeight - element.clientHeight > 1;
+  return horizontalOverflow || verticalOverflow;
+};
+
+const bindCalendarEventNoteTooltip = (noteElement: HTMLElement, noteText: string): CalendarNoteTooltipCleanup => {
+  let tooltipLayerElement: HTMLDivElement | null = null;
+  let tooltipCloseButton: HTMLButtonElement | null = null;
+  let tooltipBackdropElement: HTMLButtonElement | null = null;
+  let pressTimerId: number | null = null;
+  let suppressClickToggle = false;
+  let touchStartPoint: { x: number; y: number } | null = null;
+
+  const isMobilePointerMode = () => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+      return false;
+    }
+    return window.matchMedia('(hover: none), (pointer: coarse)').matches;
+  };
+
+  const clearPressTimer = () => {
+    if (pressTimerId !== null) {
+      window.clearTimeout(pressTimerId);
+      pressTimerId = null;
+    }
+  };
+
+  const hideMobileTooltip = () => {
+    if (!tooltipLayerElement) {
+      return;
+    }
+    tooltipCloseButton?.removeEventListener('click', hideMobileTooltip);
+    tooltipBackdropElement?.removeEventListener('click', hideMobileTooltip);
+    tooltipLayerElement.remove();
+    tooltipLayerElement = null;
+    tooltipCloseButton = null;
+    tooltipBackdropElement = null;
+  };
+
+  const ensureTooltipLayer = () => {
+    if (tooltipLayerElement) {
+      return tooltipLayerElement;
+    }
+
+    const layer = document.createElement('div');
+    layer.className = 'calendar-note-tooltip-layer';
+
+    const backdrop = document.createElement('button');
+    backdrop.type = 'button';
+    backdrop.className = 'calendar-note-tooltip-backdrop';
+    backdrop.setAttribute('aria-label', 'Close note details');
+
+    const dialog = document.createElement('div');
+    dialog.className = 'calendar-note-tooltip';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'false');
+
+    const content = document.createElement('div');
+    content.className = 'calendar-note-tooltip-content';
+    content.textContent = noteText;
+
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'calendar-note-tooltip-close';
+    closeButton.textContent = 'Close';
+
+    dialog.appendChild(content);
+    dialog.appendChild(closeButton);
+    layer.appendChild(backdrop);
+    layer.appendChild(dialog);
+    document.body.appendChild(layer);
+
+    closeButton.addEventListener('click', hideMobileTooltip);
+    backdrop.addEventListener('click', hideMobileTooltip);
+
+    tooltipLayerElement = layer;
+    tooltipCloseButton = closeButton;
+    tooltipBackdropElement = backdrop;
+
+    return layer;
+  };
+
+  const refreshDesktopTooltip = () => {
+    if (isCalendarNoteTruncated(noteElement)) {
+      noteElement.setAttribute('title', noteText);
+      return;
+    }
+    noteElement.removeAttribute('title');
+    hideMobileTooltip();
+  };
+
+  const showMobileTooltip = () => {
+    if (!isMobilePointerMode() || !isCalendarNoteTruncated(noteElement)) {
+      return;
+    }
+
+    ensureTooltipLayer();
+  };
+
+  const onTouchStart = (event: TouchEvent) => {
+    if (!isMobilePointerMode() || event.touches.length !== 1) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    touchStartPoint = { x: touch.clientX, y: touch.clientY };
+    clearPressTimer();
+    pressTimerId = window.setTimeout(() => {
+      suppressClickToggle = true;
+      showMobileTooltip();
+    }, NOTE_TOOLTIP_LONG_PRESS_DELAY_MS);
+  };
+
+  const onTouchMove = (event: TouchEvent) => {
+    if (!isMobilePointerMode() || event.touches.length !== 1 || !touchStartPoint) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    const movedDistance = Math.hypot(touch.clientX - touchStartPoint.x, touch.clientY - touchStartPoint.y);
+
+    if (movedDistance > NOTE_TOOLTIP_MOVE_CANCEL_THRESHOLD_PX) {
+      clearPressTimer();
+    }
+  };
+
+  const onTouchEndOrCancel = () => {
+    clearPressTimer();
+    touchStartPoint = null;
+  };
+
+  const onClick = () => {
+    if (!isMobilePointerMode() || !isCalendarNoteTruncated(noteElement)) {
+      return;
+    }
+
+    if (suppressClickToggle) {
+      suppressClickToggle = false;
+      return;
+    }
+
+    if (tooltipLayerElement) {
+      hideMobileTooltip();
+      return;
+    }
+
+    showMobileTooltip();
+  };
+
+  const onWindowResize = () => {
+    refreshDesktopTooltip();
+  };
+
+  const resizeObserver = typeof ResizeObserver !== 'undefined'
+    ? new ResizeObserver(() => {
+      refreshDesktopTooltip();
+    })
+    : null;
+
+  noteElement.addEventListener('mouseenter', refreshDesktopTooltip);
+  noteElement.addEventListener('focus', refreshDesktopTooltip);
+  noteElement.addEventListener('click', onClick);
+  noteElement.addEventListener('touchstart', onTouchStart, { passive: true });
+  noteElement.addEventListener('touchmove', onTouchMove, { passive: true });
+  noteElement.addEventListener('touchend', onTouchEndOrCancel, { passive: true });
+  noteElement.addEventListener('touchcancel', onTouchEndOrCancel, { passive: true });
+  window.addEventListener('resize', onWindowResize);
+  resizeObserver?.observe(noteElement);
+
+  requestAnimationFrame(refreshDesktopTooltip);
+
+  return () => {
+    clearPressTimer();
+    hideMobileTooltip();
+    noteElement.removeEventListener('mouseenter', refreshDesktopTooltip);
+    noteElement.removeEventListener('focus', refreshDesktopTooltip);
+    noteElement.removeEventListener('click', onClick);
+    noteElement.removeEventListener('touchstart', onTouchStart);
+    noteElement.removeEventListener('touchmove', onTouchMove);
+    noteElement.removeEventListener('touchend', onTouchEndOrCancel);
+    noteElement.removeEventListener('touchcancel', onTouchEndOrCancel);
+    window.removeEventListener('resize', onWindowResize);
+    resizeObserver?.disconnect();
+  };
+};
+
 function App() {
   const { locale, setLocale, t } = useI18n();
   const initialStoredAuthRef = useRef<AuthResponse | null>(readStoredAuth());
@@ -366,6 +598,7 @@ function App() {
   const [message, setMessage] = useState<string>('');
   const [messageTone, setMessageTone] = useState<MessageTone>('info');
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [adminCreateUserForm, setAdminCreateUserForm] = useState<AdminCreateUserFormState>(() => createInitialAdminCreateUserForm());
   const [passwordResetTargetUserId, setPasswordResetTargetUserId] = useState('');
   const [employeeFilter, setEmployeeFilter] = useState('all');
   const [isMobileCalendarLayout, setIsMobileCalendarLayout] = useState(() => (
@@ -387,6 +620,7 @@ function App() {
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [todayAgendaMode, setTodayAgendaMode] = useState<TodayAgendaMode>('time');
   const calendarRef = useRef<FullCalendar | null>(null);
+  const calendarEventTooltipCleanupRef = useRef<Map<HTMLElement, CalendarNoteTooltipCleanup>>(new Map());
   const sseConnectionRef = useRef<EventSource | null>(null);
   const refreshDebounceRef = useRef<number | null>(null);
   const authRef = useRef<AuthResponse | null>(initialStoredAuthRef.current);
@@ -407,6 +641,15 @@ function App() {
 
     return () => {
       document.body.classList.remove(className);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const cleanup of calendarEventTooltipCleanupRef.current.values()) {
+        cleanup();
+      }
+      calendarEventTooltipCleanupRef.current.clear();
     };
   }, []);
 
@@ -955,12 +1198,10 @@ function App() {
     if (!auth || auth.user.role !== 'ADMIN') {
       return;
     }
-    const formElement = event.currentTarget as HTMLFormElement;
-    const formData = new FormData(formElement);
-    const username = String(formData.get('username') ?? '');
-    const password = String(formData.get('password') ?? '');
-    const confirmPassword = String(formData.get('confirmPassword') ?? '');
-    const displayName = String(formData.get('displayName') ?? '');
+    const username = adminCreateUserForm.username.trim();
+    const password = adminCreateUserForm.password;
+    const confirmPassword = adminCreateUserForm.confirmPassword;
+    const displayName = adminCreateUserForm.displayName.trim() || username;
     const role = 'EMPLOYEE';
 
     if (password !== confirmPassword) {
@@ -976,7 +1217,7 @@ function App() {
       });
       setNotice(t('notices.employeeCreated'), 'success');
       await loadUsers();
-      formElement.reset();
+      setAdminCreateUserForm(createInitialAdminCreateUserForm());
     } catch (error) {
       setNotice(getDisplayError(error, t('notices.userCreationFailed')), 'error');
     } finally {
@@ -1397,11 +1638,50 @@ function App() {
     setSelectedDate(api.getDate());
   }, []);
 
+  const renderCalendarEventContent = useCallback((eventContent: EventContentArg) => {
+    const note = resolveCalendarEventNote(eventContent.event);
+
+    return (
+      <div className="calendar-event-content">
+        <div className="calendar-event-time">{eventContent.timeText}</div>
+        <div className="calendar-event-title">{eventContent.event.title}</div>
+        {note ? <div className="calendar-event-note">{note}</div> : null}
+      </div>
+    );
+  }, []);
+
+  const handleCalendarEventDidMount = useCallback((mountInfo: EventMountArg) => {
+    const noteElement = mountInfo.el.querySelector('.calendar-event-note');
+    if (!(noteElement instanceof HTMLElement)) {
+      return;
+    }
+
+    const noteText = noteElement.textContent?.trim();
+    if (!noteText) {
+      noteElement.removeAttribute('title');
+      return;
+    }
+
+    const cleanup = bindCalendarEventNoteTooltip(noteElement, noteText);
+    calendarEventTooltipCleanupRef.current.set(mountInfo.el, cleanup);
+  }, []);
+
+  const handleCalendarEventWillUnmount = useCallback((mountInfo: EventMountArg) => {
+    const cleanup = calendarEventTooltipCleanupRef.current.get(mountInfo.el);
+    if (!cleanup) {
+      return;
+    }
+
+    cleanup();
+    calendarEventTooltipCleanupRef.current.delete(mountInfo.el);
+  }, []);
+
   const calendarEvents = useMemo<EventInput[]>(() => {
     return filteredAppointments
       .map((appointment) => {
         const employeeColor = getEmployeeColor(appointment.employeeId);
         const isPendingAssignment = pendingEmployee?.id === appointment.employeeId;
+        const normalizedNote = appointment.note?.trim();
         const titleParts = [getEmployeeName(appointment.employeeId), appointment.customerName ?? ''];
         const backgroundColor = isPendingAssignment
           ? `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_PENDING_EVENT_TINT}%, ${PENDING_EMPLOYEE_COLOR} ${CALENDAR_PENDING_EVENT_TINT}%)`
@@ -1421,6 +1701,11 @@ function App() {
             appointmentId: appointment.id,
             employeeId: appointment.employeeId,
             employeeName: getEmployeeName(appointment.employeeId),
+            note: normalizedNote,
+            remark: normalizedNote,
+            description: normalizedNote,
+            memo: normalizedNote,
+            comment: normalizedNote,
           },
         };
       });
@@ -1771,6 +2056,9 @@ function App() {
                   progressiveEventRendering={true}
                   rerenderDelay={40}
                   events={calendarEvents}
+                  eventContent={renderCalendarEventContent}
+                  eventDidMount={handleCalendarEventDidMount}
+                  eventWillUnmount={handleCalendarEventWillUnmount}
                   eventDrop={handleCalendarDrop}
                   eventResize={handleCalendarResize}
                   dateClick={handleDateClick}
@@ -1952,19 +2240,48 @@ function App() {
           <form onSubmit={handleAdminCreateUser} className="stack">
             <label>
               {t('login.username')}
-              <input name="username" />
+              <input
+                name="username"
+                value={adminCreateUserForm.username}
+                onChange={(event) => {
+                  const nextUsername = event.target.value;
+                  setAdminCreateUserForm((current) => ({
+                    ...current,
+                    username: nextUsername,
+                    displayName: nextUsername,
+                  }));
+                }}
+              />
             </label>
             <label>
               {t('login.password')}
-              <input name="password" type="password" minLength={6} />
+              <input
+                name="password"
+                type="password"
+                minLength={6}
+                value={adminCreateUserForm.password}
+                onChange={(event) => setAdminCreateUserForm((current) => ({ ...current, password: event.target.value }))}
+              />
             </label>
             <label>
               {t('admin.confirmPassword')}
-              <input name="confirmPassword" type="password" minLength={6} />
+              <input
+                name="confirmPassword"
+                type="password"
+                minLength={6}
+                value={adminCreateUserForm.confirmPassword}
+                onChange={(event) => setAdminCreateUserForm((current) => ({ ...current, confirmPassword: event.target.value }))}
+              />
             </label>
             <label>
               {t('admin.displayName')}
-              <input name="displayName" />
+              <input
+                name="displayName"
+                value={adminCreateUserForm.displayName}
+                readOnly
+                aria-readonly="true"
+                className="read-only-field"
+              />
             </label>
             <button type="submit">{t('admin.createUser')}</button>
           </form>

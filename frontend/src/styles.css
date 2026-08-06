@@ -158,6 +158,12 @@ input[type="time"]:focus::-webkit-calendar-picker-indicator {
 }
 
 input::placeholder, textarea::placeholder { color: var(--text-muted); }
+input.read-only-field {
+  background: color-mix(in srgb, var(--input-bg) 82%, #94a3b8 18%);
+  border-style: dashed;
+  color: color-mix(in srgb, var(--text) 88%, #94a3b8 12%);
+  cursor: default;
+}
 textarea { min-height: 90px; }
 button {
   background: var(--button);
@@ -564,6 +570,39 @@ button:disabled { opacity: 0.65; cursor: not-allowed; }
 .fc .fc-event-main {
   padding: 2px 6px 3px;
 }
+.fc .calendar-event-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.fc .calendar-event-time {
+  font-size: 0.74rem;
+  line-height: 1.2;
+  letter-spacing: 0.015em;
+  font-weight: 600;
+  opacity: 0.94;
+  margin-bottom: 1px;
+}
+.fc .calendar-event-title {
+  font-size: 0.81rem;
+  line-height: 1.25;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fc .calendar-event-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  opacity: 0.95;
+}
 .fc .fc-event-time {
   font-size: 0.74rem;
   line-height: 1.2;
@@ -577,6 +616,57 @@ button:disabled { opacity: 0.65; cursor: not-allowed; }
   line-height: 1.25;
   font-weight: 700;
 }
+.calendar-note-tooltip-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 12px;
+}
+.calendar-note-tooltip-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.42);
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+.calendar-note-tooltip {
+  position: fixed;
+  z-index: 1;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(60vh, 420px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.55);
+  background: rgba(15, 23, 42, 0.96);
+  color: #f8fafc;
+  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.45);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+.calendar-note-tooltip-content {
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.calendar-note-tooltip-close {
+  align-self: flex-end;
+  min-width: 72px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+  background: rgba(37, 99, 235, 0.34);
+  color: #f8fafc;
+}
+.calendar-note-tooltip-close:hover {
+  background: rgba(37, 99, 235, 0.52);
+}
 
 @media (max-width: 960px) {
   .app-shell { padding: 12px; }
@@ -587,8 +677,23 @@ button:disabled { opacity: 0.65; cursor: not-allowed; }
   .fc .calendar-day-header-weekday { font-size: 0.7rem; }
   .fc .calendar-day-header-date { font-size: 0.9rem; }
   .fc .fc-event-main { padding: 2px 6px 3px; }
-  .fc .fc-event-time { font-size: 0.8rem; line-height: 1.2; font-weight: 600; opacity: 1; }
-  .fc .fc-event-title { font-size: 0.85rem; line-height: 1.25; }
+  .fc .calendar-event-content {
+    gap: 1px;
+  }
+  .fc .calendar-event-time { font-size: 0.8rem; line-height: 1.2; font-weight: 600; opacity: 1; }
+  .fc .calendar-event-title { font-size: 0.85rem; line-height: 1.25; }
+  .fc .calendar-event-note {
+    font-size: 0.75rem;
+    line-height: 1.2;
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    max-height: 2.4em;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
   .calendar-frame { min-height: 320px; }
   .panel-tabs { display: flex; }
   .panel-tabs button { flex: 1; }
