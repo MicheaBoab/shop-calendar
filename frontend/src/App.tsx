@@ -398,13 +398,22 @@ const NOTE_TOOLTIP_LONG_PRESS_DELAY_MS = 450;
 const NOTE_TOOLTIP_MOVE_CANCEL_THRESHOLD_PX = 10;
 type CalendarNoteTooltipCleanup = () => void;
 
+interface CalendarNoteTooltipText {
+  closeButtonLabel: string;
+  closeBackdropAriaLabel: string;
+}
+
 const isCalendarNoteTruncated = (element: HTMLElement) => {
   const horizontalOverflow = element.scrollWidth - element.clientWidth > 1;
   const verticalOverflow = element.scrollHeight - element.clientHeight > 1;
   return horizontalOverflow || verticalOverflow;
 };
 
-const bindCalendarEventNoteTooltip = (noteElement: HTMLElement, noteText: string): CalendarNoteTooltipCleanup => {
+const bindCalendarEventNoteTooltip = (
+  noteElement: HTMLElement,
+  noteText: string,
+  tooltipText: CalendarNoteTooltipText,
+): CalendarNoteTooltipCleanup => {
   let tooltipLayerElement: HTMLDivElement | null = null;
   let tooltipCloseButton: HTMLButtonElement | null = null;
   let tooltipBackdropElement: HTMLButtonElement | null = null;
@@ -449,7 +458,7 @@ const bindCalendarEventNoteTooltip = (noteElement: HTMLElement, noteText: string
     const backdrop = document.createElement('button');
     backdrop.type = 'button';
     backdrop.className = 'calendar-note-tooltip-backdrop';
-    backdrop.setAttribute('aria-label', 'Close note details');
+    backdrop.setAttribute('aria-label', tooltipText.closeBackdropAriaLabel);
 
     const dialog = document.createElement('div');
     dialog.className = 'calendar-note-tooltip';
@@ -463,7 +472,7 @@ const bindCalendarEventNoteTooltip = (noteElement: HTMLElement, noteText: string
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
     closeButton.className = 'calendar-note-tooltip-close';
-    closeButton.textContent = 'Close';
+    closeButton.textContent = tooltipText.closeButtonLabel;
 
     dialog.appendChild(content);
     dialog.appendChild(closeButton);
@@ -1650,6 +1659,11 @@ function App() {
     );
   }, []);
 
+  const calendarNoteTooltipText = useMemo<CalendarNoteTooltipText>(() => ({
+    closeButtonLabel: t('tooltip.close'),
+    closeBackdropAriaLabel: t('tooltip.closeNoteDetails'),
+  }), [t]);
+
   const handleCalendarEventDidMount = useCallback((mountInfo: EventMountArg) => {
     const noteElement = mountInfo.el.querySelector('.calendar-event-note');
     if (!(noteElement instanceof HTMLElement)) {
@@ -1662,9 +1676,9 @@ function App() {
       return;
     }
 
-    const cleanup = bindCalendarEventNoteTooltip(noteElement, noteText);
+    const cleanup = bindCalendarEventNoteTooltip(noteElement, noteText, calendarNoteTooltipText);
     calendarEventTooltipCleanupRef.current.set(mountInfo.el, cleanup);
-  }, []);
+  }, [calendarNoteTooltipText]);
 
   const handleCalendarEventWillUnmount = useCallback((mountInfo: EventMountArg) => {
     const cleanup = calendarEventTooltipCleanupRef.current.get(mountInfo.el);
