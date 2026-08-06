@@ -46,6 +46,15 @@ model User {
   @@map("users")
 }
 
+model StaffColorMap {
+  staffName String   @id @map("staff_name")
+  color     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("staff_color_map")
+}
+
 model Appointment {
   id           String            @id @default(cuid())
   employeeId   String            @map("employee_id")
