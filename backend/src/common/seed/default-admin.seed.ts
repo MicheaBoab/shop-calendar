@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { UserRole, UserStatus } from '@prisma/client';
+import { getPendingAssignmentEmployeeUsername } from '../pending-assignment';
 
 @Injectable()
 export class DefaultAdminSeed {
@@ -49,7 +50,7 @@ export class DefaultAdminSeed {
   }
 
   private async ensurePendingAssignmentEmployee() {
-    const username = process.env.PENDING_EMPLOYEE_USERNAME ?? 'pending_assignment';
+    const username = getPendingAssignmentEmployeeUsername();
     const existing = await this.prismaService.user.findFirst({
       where: { username, deletedAt: null },
       select: { id: true },

@@ -14,6 +14,11 @@ NestJS + Prisma backend for the shop appointment calendar MVP.
   - Admin `DELETE /appointments/:id` => soft delete (`deletedAt` set, with cancellation status), record audit log.
 - Frontend default new appointment duration is 60 minutes.
 
+## Pending / 暂定占位员工说明
+
+相关说明已收敛到 [../docs/pending-assignment-logic.md](../docs/pending-assignment-logic.md)。
+这份文档重点说明：统一 pending 来源、未来有效预约回退、历史预约不变，以及前后端共用逻辑的维护方式。
+
 ## API Notes (Appointments)
 
 ### POST /appointments

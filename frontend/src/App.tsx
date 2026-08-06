@@ -30,6 +30,11 @@ import {
   normalizePhoneInput,
 } from './phone-format';
 import {
+  DEFAULT_PENDING_EMPLOYEE_COLOR,
+  getPendingAssignmentRuntime,
+  isPendingAssignmentEmployee,
+} from './pending-assignment';
+import {
   applySlotClickToForm,
   getInitialCalendarViewForWidth,
   getPrimaryCalendarControl,
@@ -207,8 +212,6 @@ const createInitialForm = (): AppointmentFormState => {
     note: '',
   };
 };
-const PENDING_EMPLOYEE_USERNAME = 'pending_assignment';
-const PENDING_EMPLOYEE_COLOR = '#64748b';
 const CALENDAR_EVENT_BACKGROUND_DARK = '#0f172a';
 const CALENDAR_EVENT_TEXT_LIGHT = '#f8fafc';
 const CALENDAR_EVENT_EMPLOYEE_TINT = 28;
@@ -701,22 +704,24 @@ function App() {
     [users],
   );
 
+  const pendingAssignmentRuntime = useMemo(() => getPendingAssignmentRuntime(), []);
+
   const pendingEmployee = useMemo(
-    () => employeeOptions.find((user) => user.username === PENDING_EMPLOYEE_USERNAME) ?? null,
-    [employeeOptions],
+    () => employeeOptions.find((user) => isPendingAssignmentEmployee(user, pendingAssignmentRuntime)) ?? null,
+    [employeeOptions, pendingAssignmentRuntime],
   );
 
   const assignableEmployeeOptions = useMemo(
-    () => employeeOptions.filter((user) => user.username !== PENDING_EMPLOYEE_USERNAME),
-    [employeeOptions],
+    () => employeeOptions.filter((user) => !isPendingAssignmentEmployee(user, pendingAssignmentRuntime)),
+    [employeeOptions, pendingAssignmentRuntime],
   );
 
   const employeeColorMap = useMemo(() => {
     const colorMap = new Map<string, string>();
 
     for (const employee of employeeOptions) {
-      if (employee.username === PENDING_EMPLOYEE_USERNAME) {
-        colorMap.set(employee.id, PENDING_EMPLOYEE_COLOR);
+      if (isPendingAssignmentEmployee(employee, pendingAssignmentRuntime)) {
+        colorMap.set(employee.id, DEFAULT_PENDING_EMPLOYEE_COLOR);
         continue;
       }
 
@@ -726,13 +731,13 @@ function App() {
     }
 
     return colorMap;
-  }, [employeeOptions]);
+  }, [employeeOptions, pendingAssignmentRuntime]);
 
   const employeeNameMap = useMemo(() => {
     const nameMap = new Map<string, string>();
 
     for (const user of users) {
-      const normalizedDisplayName = user.username === PENDING_EMPLOYEE_USERNAME
+      const normalizedDisplayName = isPendingAssignmentEmployee(user, pendingAssignmentRuntime)
         ? t('editor.pendingAssignment')
         : user.displayName;
       nameMap.set(user.id, normalizedDisplayName);
@@ -743,7 +748,7 @@ function App() {
 
   const getEmployeeColor = useCallback((employeeId: string) => {
     if (!employeeId.trim()) {
-      return PENDING_EMPLOYEE_COLOR;
+      return DEFAULT_PENDING_EMPLOYEE_COLOR;
     }
 
     const knownColor = employeeColorMap.get(employeeId);
@@ -759,8 +764,12 @@ function App() {
   }, [employeeNameMap, t]);
 
   const isAppointmentTentative = useCallback((appointment: AppointmentRecord) => {
-    return new Date(appointment.startAt).getTime() > Date.now();
-  }, []);
+    if (!pendingEmployee) {
+      return false;
+    }
+
+    return appointment.employeeId === pendingEmployee.id;
+  }, [pendingEmployee]);
 
   const getAppointmentDisplayName = useCallback((appointment: AppointmentRecord) => {
     if (isAppointmentTentative(appointment)) {
@@ -777,7 +786,7 @@ function App() {
 
   const getAppointmentColor = useCallback((appointment: AppointmentRecord) => {
     if (isAppointmentTentative(appointment)) {
-      return PENDING_EMPLOYEE_COLOR;
+      return DEFAULT_PENDING_EMPLOYEE_COLOR;
     }
 
     const snapshotColor = appointment.employeeColor?.trim();
@@ -1570,15 +1579,15 @@ function App() {
 
   const manageableUsers = useMemo(() => {
     if (!auth) {
-      return users.filter((user) => user.username !== PENDING_EMPLOYEE_USERNAME);
+      return users.filter((user) => !isPendingAssignmentEmployee(user, pendingAssignmentRuntime));
     }
 
-    return users.filter((user) => user.id !== auth.user.id && user.username !== PENDING_EMPLOYEE_USERNAME);
-  }, [users, auth]);
+    return users.filter((user) => user.id !== auth.user.id && !isPendingAssignmentEmployee(user, pendingAssignmentRuntime));
+  }, [users, auth, pendingAssignmentRuntime]);
 
   const passwordResetUsers = useMemo(
-    () => users.filter((user) => user.username !== PENDING_EMPLOYEE_USERNAME),
-    [users],
+    () => users.filter((user) => !isPendingAssignmentEmployee(user, pendingAssignmentRuntime)),
+    [users, pendingAssignmentRuntime],
   );
 
   const formatAuditPayloadPreview = useCallback((payload: unknown) => {
@@ -1731,7 +1740,7 @@ function App() {
         const normalizedNote = appointment.note?.trim();
         const titleParts = [getAppointmentDisplayName(appointment), appointment.customerName ?? ''];
         const backgroundColor = isPendingAssignment
-          ? `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_PENDING_EVENT_TINT}%, ${PENDING_EMPLOYEE_COLOR} ${CALENDAR_PENDING_EVENT_TINT}%)`
+          ? `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_PENDING_EVENT_TINT}%, ${DEFAULT_PENDING_EMPLOYEE_COLOR} ${CALENDAR_PENDING_EVENT_TINT}%)`
           : `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_EVENT_EMPLOYEE_TINT}%, ${employeeColor} ${CALENDAR_EVENT_EMPLOYEE_TINT}%)`;
         return {
           id: appointment.id,
@@ -2033,7 +2042,7 @@ function App() {
                     <option value="all">{t('calendar.allEmployees')}</option>
                     {employeeOptions.map((user) => (
                       <option key={user.id} value={user.id}>
-                        {user.username === PENDING_EMPLOYEE_USERNAME ? t('editor.pendingAssignment') : user.displayName}
+                        {isPendingAssignmentEmployee(user, pendingAssignmentRuntime) ? t('editor.pendingAssignment') : user.displayName}
                       </option>
                     ))}
                   </select>
@@ -2052,7 +2061,7 @@ function App() {
                   {employeeOptions.map((user) => (
                     <div key={user.id} className="legend-item">
                       <span className="legend-swatch" style={{ backgroundColor: getEmployeeColor(user.id) }} />
-                      <span>{user.username === PENDING_EMPLOYEE_USERNAME ? t('editor.pendingAssignment') : user.displayName}</span>
+                      <span>{isPendingAssignmentEmployee(user, pendingAssignmentRuntime) ? t('editor.pendingAssignment') : user.displayName}</span>
                     </div>
                   ))}
                 </div>

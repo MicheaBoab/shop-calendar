@@ -1,11 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { UserRole, UserStatus } from '@prisma/client';
+import { AppointmentStatus, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserPasswordDto } from './dto/update-user-password.dto';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto';
+import { getPendingAssignmentEmployeeUsername } from '../common/pending-assignment';
 
 @Injectable()
 export class UsersService {
@@ -164,7 +165,7 @@ export class UsersService {
 		});
 		const resolvedColor = await this.getStaffColor(existing.displayName ?? existing.username);
 		const pendingEmployee = await this.prismaService.user.findFirst({
-			where: { username: 'pending_assignment', deletedAt: null },
+			where: { username: getPendingAssignmentEmployeeUsername(), deletedAt: null },
 			select: { id: true },
 		});
 		const now = new Date();
@@ -173,6 +174,8 @@ export class UsersService {
 			await this.prismaService.appointment.updateMany({
 				where: {
 					employeeId: id,
+					status: AppointmentStatus.SCHEDULED,
+					deletedAt: null,
 					startAt: { gt: now },
 				},
 				data: {
