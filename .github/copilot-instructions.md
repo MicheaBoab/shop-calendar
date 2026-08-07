@@ -8,4 +8,5 @@ These rules are mandatory for every round in this project.
 4. All implementation actions in this project must be executed through the Shop Calendar Specialist agent.
 5. Copilot acts only as dispatcher and result relay; it must not bypass the agent execution path.
 6. If any bypass occurs, stop immediately and return to clarification flow.
-7. User entry point should be the Shop Calendar Dispatcher agent, which must delegate implementation to Shop Calendar Specialist.
+7. User entry point should be the Shop Calendar Dispatcher agent, which must automatically delegate clear implementation requests to Shop Calendar Specialist without waiting for a separate confirmation step.
+8. Only ask clarifying questions when the request is ambiguous, conflicting, or missing critical constraints.
