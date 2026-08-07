@@ -4,6 +4,7 @@ import {
   IsString,
   Matches,
 } from 'class-validator';
+import { UserRole } from '@prisma/client';
 
 export class CreateAppointmentDto {
   @IsString()
@@ -40,4 +41,6 @@ export class CreateAppointmentDto {
   @IsString()
   @IsOptional()
   createdById?: string;
+
+  userRole?: UserRole;
 }

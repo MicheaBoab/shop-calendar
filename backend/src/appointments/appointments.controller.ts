@@ -66,6 +66,7 @@ export class AppointmentsController {
 		return this.appointmentsService.createAppointment({
 			...dto,
 			createdById: req.user.sub,
+			userRole: req.user.role,
 		});
 	}
 
@@ -79,6 +80,7 @@ export class AppointmentsController {
 		return this.appointmentsService.updateAppointment(id, {
 			...dto,
 			updatedById: req.user.sub,
+			userRole: req.user.role,
 		});
 	}
 
@@ -106,6 +108,7 @@ export class AppointmentsController {
 		return this.appointmentsService.moveAppointment(id, {
 			...dto,
 			updatedById: req.user.sub,
+			userRole: req.user.role,
 		});
 	}
 
