@@ -1,4 +1,4 @@
-import { AppointmentStatus } from '@prisma/client';
+import { AppointmentStatus, UserRole } from '@prisma/client';
 import {
   IsEnum,
   IsISO8601,
@@ -50,4 +50,6 @@ export class UpdateAppointmentDto {
   @IsEnum(AppointmentStatus)
   @IsOptional()
   status?: AppointmentStatus;
+
+  userRole?: UserRole;
 }

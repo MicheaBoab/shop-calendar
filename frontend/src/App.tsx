@@ -1134,7 +1134,7 @@ function App() {
       return;
     }
 
-    if (isLocalDateTimeInPast(startAt)) {
+    if (isLocalDateTimeInPast(startAt) && auth?.user.role !== 'ADMIN') {
       setNotice(t('notices.startInPast'), 'error');
       return;
     }

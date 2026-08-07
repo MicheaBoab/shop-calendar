@@ -53,6 +53,7 @@ export class AppointmentsService {
 		const startAt = new Date(dto.startAt);
 		const endAt = new Date(dto.endAt);
 		this.validateTimeRange(startAt, endAt);
+		this.validateTimeNotInPast(startAt, dto.userRole);
 		if (!(await this.isPendingAssignmentEmployee(dto.employeeId))) {
 			await this.assertNoTimeConflict(dto.employeeId, startAt, endAt);
 		}
@@ -100,6 +101,7 @@ export class AppointmentsService {
 		const nextEmployeeId = dto.employeeId ?? existing.employeeId;
 
 		this.validateTimeRange(nextStart, nextEnd);
+		this.validateTimeNotInPast(nextStart, dto.userRole);
 		if (!(await this.isPendingAssignmentEmployee(nextEmployeeId))) {
 			await this.assertNoTimeConflict(nextEmployeeId, nextStart, nextEnd, id);
 		}
@@ -288,6 +290,18 @@ export class AppointmentsService {
 	private validateTimeRange(startAt: Date, endAt: Date) {
 		if (startAt >= endAt) {
 			throw new BadRequestException('startAt must be earlier than endAt');
+		}
+	}
+
+	private validateTimeNotInPast(startAt: Date, userRole?: string) {
+		// Only enforce past time check for non-admin users
+		if (userRole === 'ADMIN') {
+			return;
+		}
+
+		const now = new Date();
+		if (startAt < now) {
+			throw new BadRequestException('Cannot schedule appointment to a past time');
 		}
 	}
 
