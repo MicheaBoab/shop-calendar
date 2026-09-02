@@ -60,6 +60,12 @@ export class AppointmentsController {
 		return this.appointmentsService.listAppointments(query);
 	}
 
+	@Get('customer-lookup')
+	@UseGuards(JwtAuthGuard)
+	findCustomerByPhone(@Query('phone') phone: string) {
+		return this.appointmentsService.findCustomerByPhone(phone);
+	}
+
 	@Post()
 	@UseGuards(JwtAuthGuard)
 	createAppointment(@Body() dto: CreateAppointmentDto, @Req() req: AuthenticatedRequest) {

@@ -45,6 +45,24 @@ export class AppointmentsService {
 		);
 	}
 
+	async findCustomerByPhone(phone: string) {
+		if (!/^\d{10}$/.test(phone)) {
+			throw new BadRequestException('phone must contain exactly 10 digits');
+		}
+
+		const appointment = await this.prismaService.appointment.findFirst({
+			where: {
+				phone,
+				deletedAt: null,
+				OR: [{ customerName: { not: null } }, { note: { not: null } }],
+			},
+			orderBy: { createdAt: 'desc' },
+			select: { customerName: true, note: true },
+		});
+
+		return appointment ?? { customerName: null, note: null };
+	}
+
 	async createAppointment(dto: CreateAppointmentDto) {
 		if (!dto.createdById) {
 			throw new BadRequestException('createdById is required');
