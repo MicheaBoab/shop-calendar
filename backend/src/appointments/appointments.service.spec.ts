@@ -106,6 +106,29 @@ describe('AppointmentsService', () => {
     );
   });
 
+    it('finds the latest customer details for an active phone number', async () => {
+      prismaService.appointment.findFirst.mockResolvedValue({
+        customerName: 'Alice',
+        note: 'Prefers morning appointments',
+      });
+
+      const result = await service.findCustomerByPhone('3125551234');
+
+      expect(prismaService.appointment.findFirst).toHaveBeenCalledWith({
+        where: {
+          phone: '3125551234',
+          deletedAt: null,
+          OR: [{ customerName: { not: null } }, { note: { not: null } }],
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { customerName: true, note: true },
+      });
+      expect(result).toEqual({
+        customerName: 'Alice',
+        note: 'Prefers morning appointments',
+      });
+    });
+
   it('uses cancel action for employees and delete action for admins with audit logs', async () => {
     const existing = makeAppointment({ id: 'appt-3' });
     const cancelled = makeAppointment({ id: 'appt-3', status: AppointmentStatus.CANCELLED, updatedById: 'employee-2' });

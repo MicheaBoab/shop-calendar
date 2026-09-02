@@ -1549,6 +1549,32 @@ function App() {
     }));
   }, []);
 
+  useEffect(() => {
+    if (editingId || !auth?.accessToken || !/^\d{10}$/.test(form.phone)) {
+      return;
+    }
+
+    let active = true;
+    void fetchJson(`/appointments/customer-lookup?phone=${encodeURIComponent(form.phone)}`)
+      .then((customer: { customerName?: string | null; note?: string | null }) => {
+        if (!active || (!customer.customerName && !customer.note)) {
+          return;
+        }
+
+        setForm((current) => ({
+          ...current,
+          customerName: customer.customerName ?? current.customerName,
+          note: customer.note ?? current.note,
+        }));
+      })
+      .catch(() => {
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [auth?.accessToken, editingId, form.phone]);
+
   const todaySummary = useMemo(() => {
     const now = new Date();
     const todayAppointments = appointments.filter((appointment) => {
