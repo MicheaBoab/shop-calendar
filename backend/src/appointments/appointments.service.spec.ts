@@ -1,5 +1,10 @@
 import { AppointmentStatus } from '@prisma/client';
 import { AppointmentsService } from './appointments.service';
+import { requireCurrentShopId } from '../common/shop-context/shop-context';
+
+jest.mock('../common/shop-context/shop-context', () => ({
+  requireCurrentShopId: jest.fn(() => 'prosper'),
+}));
 
 // Fixed month/day one year ahead so it stays valid for validateTimeNotInPast regardless of when the suite runs.
 const futureIso = (hours: number, minutes: number) => {
@@ -61,6 +66,7 @@ describe('AppointmentsService', () => {
 
   beforeEach(() => {
     jest.resetAllMocks();
+    (requireCurrentShopId as jest.Mock).mockReturnValue('prosper');
     prismaService.user.findFirst.mockResolvedValue(null);
     prismaService.$transaction.mockImplementation(async (callback: (tx: unknown) => unknown) =>
       callback(prismaService),
@@ -131,6 +137,7 @@ describe('AppointmentsService', () => {
 
       expect(prismaService.appointment.findFirst).toHaveBeenCalledWith({
         where: {
+          shopId: 'prosper',
           phone: '3125551234',
           deletedAt: null,
           OR: [{ customerName: { not: null } }, { note: { not: null } }],
@@ -142,6 +149,34 @@ describe('AppointmentsService', () => {
         customerName: 'Alice',
         note: 'Prefers morning appointments',
       });
+    });
+
+    it('isolates customer lookup by shop when the active shop context changes', async () => {
+      (requireCurrentShopId as jest.Mock).mockReturnValueOnce('shop-a');
+      prismaService.appointment.findFirst.mockResolvedValueOnce({
+        customerName: 'Alice',
+        note: null,
+      });
+
+      const resultA = await service.findCustomerByPhone('3125551234');
+
+      expect(prismaService.appointment.findFirst).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ where: expect.objectContaining({ shopId: 'shop-a', phone: '3125551234' }) }),
+      );
+      expect(resultA).toEqual({ customerName: 'Alice', note: null });
+
+      // Same phone number, different shop: must not see the other shop's customer record.
+      (requireCurrentShopId as jest.Mock).mockReturnValueOnce('shop-b');
+      prismaService.appointment.findFirst.mockResolvedValueOnce(null);
+
+      const resultB = await service.findCustomerByPhone('3125551234');
+
+      expect(prismaService.appointment.findFirst).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ where: expect.objectContaining({ shopId: 'shop-b', phone: '3125551234' }) }),
+      );
+      expect(resultB).toEqual({ customerName: null, note: null });
     });
 
   it('uses cancel action for employees and delete action for admins with audit logs', async () => {
@@ -262,6 +297,24 @@ describe('AppointmentsService', () => {
   expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenCalledWith('admin-1');
     expect(prismaService.appointment.findFirst).toHaveBeenCalled();
     expect(prismaService.appointment.create).toHaveBeenCalled();
+  });
+
+  it('rejects creating a single appointment when the employee already has an overlapping appointment', async () => {
+    prismaService.appointment.findFirst.mockResolvedValueOnce({ id: 'conflict-1' });
+
+    await expect(
+      service.createAppointment({
+        employeeId: 'emp-1',
+        startAt: futureIso(15, 0),
+        endAt: futureIso(16, 0),
+        phone: '3125551234',
+        price: '25.00',
+        createdById: 'admin-1',
+      }),
+    ).rejects.toThrow('overlaps an existing appointment');
+
+    expect(prismaService.appointment.create).not.toHaveBeenCalled();
+    expect(appointmentsEventsService.publishAppointmentsChanged).not.toHaveBeenCalled();
   });
 
   it('skips overlap checks for pending assignment employee', async () => {
