@@ -127,6 +127,8 @@ button, input, select, textarea { font: inherit; }
 }
 .stack { display: flex; flex-direction: column; gap: 10px; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
+.checkbox-group { display: flex; flex-wrap: wrap; gap: 10px; }
+.checkbox-option { flex-direction: row; align-items: center; gap: 6px; font-weight: 500; }
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; color: var(--text); }
 .field-label { display: inline-flex; align-items: center; gap: 4px; }
 .field-label-note {

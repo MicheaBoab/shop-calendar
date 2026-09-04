@@ -60,6 +60,7 @@ interface AuthResponse {
 interface AppointmentRecord {
   id: string;
   employeeId: string;
+  groupId?: string | null;
   employeeDisplayName?: string | null;
   employeeColor?: string | null;
   startAt: string;
@@ -83,7 +84,9 @@ interface UserRecord {
 }
 
 interface AppointmentFormState {
-  employeeId: string;
+  employeeIds: string[];
+  partySize: string;
+  includePending: boolean;
   startDate: string;
   startTime: string;
   durationMinutes: string;
@@ -202,7 +205,9 @@ const persistAuth = (auth: AuthResponse | null) => {
 const createInitialForm = (): AppointmentFormState => {
   const today = new Date();
   return {
-    employeeId: '',
+    employeeIds: [],
+    partySize: '1',
+    includePending: false,
     startDate: formatDateForUsInput(today),
     startTime: '',
     durationMinutes: String(DEFAULT_APPOINTMENT_DURATION_MINUTES),
@@ -1095,10 +1100,24 @@ function App() {
       return;
     }
 
-    const selectedEmployeeId = form.employeeId || pendingEmployee?.id || '';
+    const partySize = Math.max(1, parseInt(form.partySize, 10) || 1);
+    const selectedEmployeeIds = form.employeeIds;
 
-    if (!selectedEmployeeId || !form.startDate || !form.startTime || !form.phone) {
+    if (!form.startDate || !form.startTime || !form.phone) {
       setNotice(t('notices.fillRequired'), 'error');
+      return;
+    }
+
+    if (selectedEmployeeIds.length > partySize) {
+      setNotice(t('notices.partySizeExceeded'), 'error');
+      return;
+    }
+
+    if (selectedEmployeeIds.length < partySize && !form.includePending) {
+      setNotice(
+        t('notices.pendingRequired', { selected: String(selectedEmployeeIds.length), partySize: String(partySize) }),
+        'error',
+      );
       return;
     }
 
@@ -1162,7 +1181,8 @@ function App() {
     setNotice('');
     try {
       const payload = {
-        employeeId: selectedEmployeeId,
+        employeeIds: selectedEmployeeIds,
+        partySize,
         startAt: startAt.toISOString(),
         endAt: endAt.toISOString(),
         phone: form.phone,
@@ -1196,13 +1216,26 @@ function App() {
     }
   };
 
-  const handleEdit = (appointment: AppointmentRecord) => {
+  const handleEdit = async (appointment: AppointmentRecord) => {
     setEditingId(appointment.id);
     setNotice(t('notices.editingExisting'), 'info');
     const startAt = new Date(appointment.startAt);
     const endAt = new Date(appointment.endAt);
+
+    // Linked-edit groups: pull sibling records so headcount/employee selection reflects the whole group.
+    const groupMembers = appointment.groupId
+      ? ((await fetchJson(`/appointments?groupId=${appointment.groupId}`)) as AppointmentRecord[])
+      : [appointment];
+
+    const realMembers = groupMembers.filter(
+      (member) => !pendingEmployee || member.employeeId !== pendingEmployee.id,
+    );
+    const pendingMemberCount = groupMembers.length - realMembers.length;
+
     setForm({
-      employeeId: pendingEmployee && appointment.employeeId === pendingEmployee.id ? '' : appointment.employeeId,
+      employeeIds: realMembers.map((member) => member.employeeId),
+      partySize: String(groupMembers.length || 1),
+      includePending: pendingMemberCount > 0,
       startDate: formatDateForUsInput(startAt),
       startTime: formatTimeOnlyForInput(startAt),
       durationMinutes: String(
@@ -1924,13 +1957,68 @@ function App() {
               ) : null}
               <form onSubmit={handleCreateOrUpdate} className="stack">
                 <label>
+                  <span className="field-label">{t('editor.partySize')}</span>
+                  <div className="row">
+                    <button
+                      type="button"
+                      onClick={() => setForm((current) => ({
+                        ...current,
+                        partySize: String(Math.max(1, (parseInt(current.partySize, 10) || 1) - 1)),
+                      }))}
+                    >
+                      -1
+                    </button>
+                    <input
+                      type="number"
+                      min={1}
+                      max={99}
+                      value={form.partySize}
+                      onChange={(e) => setForm({ ...form, partySize: e.target.value })}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setForm((current) => ({
+                        ...current,
+                        partySize: String(Math.min(99, (parseInt(current.partySize, 10) || 1) + 1)),
+                      }))}
+                    >
+                      +1
+                    </button>
+                  </div>
+                </label>
+                <label>
                   <span className="field-label">{t('editor.employee')}</span>
-                  <select value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })}>
-                    <option value="">{t('editor.pendingAssignment')}</option>
-                    {assignableEmployeeOptions.map((user) => (
-                      <option key={user.id} value={user.id}>{user.displayName}</option>
-                    ))}
-                  </select>
+                  <div className="checkbox-group" role="group" aria-label={t('editor.employee')}>
+                    {assignableEmployeeOptions.map((user) => {
+                      const checked = form.employeeIds.includes(user.id);
+                      return (
+                        <label key={user.id} className="checkbox-option">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => setForm((current) => ({
+                              ...current,
+                              employeeIds: e.target.checked
+                                ? [...current.employeeIds, user.id]
+                                : current.employeeIds.filter((id) => id !== user.id),
+                            }))}
+                          />
+                          {user.displayName}
+                        </label>
+                      );
+                    })}
+                    {pendingEmployee ? (
+                      <label className="checkbox-option">
+                        <input
+                          type="checkbox"
+                          checked={form.includePending}
+                          onChange={(e) => setForm({ ...form, includePending: e.target.checked })}
+                        />
+                        {t('editor.pendingAssignment')}
+                      </label>
+                    ) : null}
+                  </div>
+                  <span className="hint">{t('editor.includePending')}</span>
                 </label>
                 <div className="row">
                   <label>
