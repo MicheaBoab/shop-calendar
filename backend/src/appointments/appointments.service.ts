@@ -1,26 +1,29 @@
 import {
 	BadRequestException,
 	ConflictException,
+	Inject,
 	Injectable,
 	NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Appointment, AppointmentStatus, Prisma } from '@prisma/client';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { Appointment, AppointmentStatus } from '@prisma/client';
+import { SHOP_SCOPED_PRISMA } from '../common/prisma/prisma.module';
+import type { ShopScopedPrismaClient } from '../common/prisma/prisma.module';
+import { requireCurrentShopId } from '../common/shop-context/shop-context';
 
-type PrismaClientOrTx = PrismaService | Prisma.TransactionClient;
+type PrismaClientOrTx = Pick<ShopScopedPrismaClient, 'appointment' | 'user' | 'staffColorMap'>;
 import { AuditService } from '../audit/audit.service';
 import { CreateAppointmentDto } from './dto/create-appointment.dto';
 import { ListAppointmentsDto } from './dto/list-appointments.dto';
 import { MoveAppointmentDto } from './dto/move-appointment.dto';
 import { UpdateAppointmentDto } from './dto/update-appointment.dto';
 import { AppointmentsEventsService } from './appointments-events.service';
-import { getPendingAssignmentEmployeeUsername } from '../common/pending-assignment';
+import { getPendingAssignmentEmployeeUsernameForShop } from '../common/pending-assignment';
 
 @Injectable()
 export class AppointmentsService {
 	constructor(
-		private readonly prismaService: PrismaService,
+		@Inject(SHOP_SCOPED_PRISMA) private readonly prismaService: ShopScopedPrismaClient,
 		private readonly auditService: AuditService,
 		private readonly appointmentsEventsService: AppointmentsEventsService,
 	) {}
@@ -31,6 +34,7 @@ export class AppointmentsService {
 
 		const appointments = await this.prismaService.appointment.findMany({
 			where: {
+				shopId: requireCurrentShopId(),
 				deletedAt: null,
 				...(query.employeeId ? { employeeId: query.employeeId } : {}),
 				...(query.groupId ? { groupId: query.groupId } : {}),
@@ -56,6 +60,7 @@ export class AppointmentsService {
 
 		const appointment = await this.prismaService.appointment.findFirst({
 			where: {
+				shopId: requireCurrentShopId(),
 				phone,
 				deletedAt: null,
 				OR: [{ customerName: { not: null } }, { note: { not: null } }],
@@ -91,6 +96,7 @@ export class AppointmentsService {
 		const employeeSnapshot = await this.getEmployeeSnapshot(dto.employeeId);
 		const appointment = await this.prismaService.appointment.create({
 			data: {
+				shopId: requireCurrentShopId(),
 				employeeId: dto.employeeId,
 				employeeDisplayName: employeeSnapshot.employeeDisplayName,
 				employeeColor: employeeSnapshot.employeeColor,
@@ -146,6 +152,7 @@ export class AppointmentsService {
 		}
 
 		const groupId = employeeIds.length + pendingCount > 1 ? randomUUID() : null;
+		const shopId = requireCurrentShopId();
 
 		const created = await this.prismaService.$transaction(async (tx) => {
 			const records: Appointment[] = [];
@@ -156,6 +163,7 @@ export class AppointmentsService {
 				records.push(
 					await tx.appointment.create({
 						data: {
+							shopId,
 							employeeId,
 							employeeDisplayName: snapshot.employeeDisplayName,
 							employeeColor: snapshot.employeeColor,
@@ -179,6 +187,7 @@ export class AppointmentsService {
 				records.push(
 					await tx.appointment.create({
 						data: {
+							shopId,
 							employeeId: pendingEmployeeId!,
 							employeeDisplayName: snapshot.employeeDisplayName,
 							employeeColor: snapshot.employeeColor,
@@ -242,7 +251,7 @@ export class AppointmentsService {
 
 		const employeeSnapshot = await this.getEmployeeSnapshot(nextEmployeeId);
 		const updated = await this.prismaService.appointment.update({
-			where: { id },
+			where: { id, shopId: requireCurrentShopId() },
 			data: {
 				employeeId: nextEmployeeId,
 				employeeDisplayName: employeeSnapshot.employeeDisplayName ?? existing.employeeDisplayName ?? null,
@@ -282,10 +291,11 @@ export class AppointmentsService {
 		this.validateTimeNotInPast(nextStart, dto.userRole);
 
 		const pendingEmployeeId = await this.getPendingAssignmentEmployeeId();
+		const shopId = requireCurrentShopId();
 
 		const currentMembers = anchor.groupId
 			? await this.prismaService.appointment.findMany({
-					where: { groupId: anchor.groupId, deletedAt: null },
+					where: { shopId, groupId: anchor.groupId, deletedAt: null },
 				})
 			: [anchor];
 
@@ -358,6 +368,7 @@ export class AppointmentsService {
 					await tx.appointment.create({
 						data: {
 							...sharedData,
+							shopId,
 							employeeId,
 							employeeDisplayName: snapshot.employeeDisplayName,
 							employeeColor: snapshot.employeeColor,
@@ -392,6 +403,7 @@ export class AppointmentsService {
 					await tx.appointment.create({
 						data: {
 							...sharedData,
+							shopId,
 							employeeId: pendingEmployeeId!,
 							employeeDisplayName: snapshot.employeeDisplayName,
 							employeeColor: snapshot.employeeColor,
@@ -431,7 +443,7 @@ export class AppointmentsService {
 		const existing = await this.getActiveAppointmentOrThrow(id);
 
 		const cancelled = await this.prismaService.appointment.update({
-			where: { id },
+			where: { id, shopId: requireCurrentShopId() },
 			data: {
 				status: AppointmentStatus.CANCELLED,
 				updatedById: cancelledById,
@@ -455,7 +467,7 @@ export class AppointmentsService {
 		const existing = await this.getActiveAppointmentOrThrow(id);
 
 		const deleted = await this.prismaService.appointment.update({
-			where: { id },
+			where: { id, shopId: requireCurrentShopId() },
 			data: {
 				status: AppointmentStatus.CANCELLED,
 				deletedAt: new Date(),
@@ -487,7 +499,7 @@ export class AppointmentsService {
 
 	private async getActiveAppointmentOrThrow(id: string) {
 		const appointment = await this.prismaService.appointment.findFirst({
-			where: { id, deletedAt: null },
+			where: { id, shopId: requireCurrentShopId(), deletedAt: null },
 		});
 
 		if (!appointment) {
@@ -506,6 +518,7 @@ export class AppointmentsService {
 	) {
 		const conflict = await client.appointment.findFirst({
 			where: {
+				shopId: requireCurrentShopId(),
 				employeeId,
 				status: AppointmentStatus.SCHEDULED,
 				deletedAt: null,
@@ -524,7 +537,7 @@ export class AppointmentsService {
 	}
 
 	private async isPendingAssignmentEmployee(employeeId: string) {
-		const pendingUsername = getPendingAssignmentEmployeeUsername();
+		const pendingUsername = getPendingAssignmentEmployeeUsernameForShop(requireCurrentShopId());
 		const user = await this.prismaService.user.findFirst({
 			where: {
 				id: employeeId,
@@ -538,7 +551,7 @@ export class AppointmentsService {
 	}
 
 	private async getPendingAssignmentEmployeeId() {
-		const pendingUsername = getPendingAssignmentEmployeeUsername();
+		const pendingUsername = getPendingAssignmentEmployeeUsernameForShop(requireCurrentShopId());
 		const user = await this.prismaService.user.findFirst({
 			where: { username: pendingUsername, deletedAt: null },
 			select: { id: true },
@@ -562,7 +575,7 @@ export class AppointmentsService {
 	private async getStaffColor(staffName: string) {
 		const normalizedStaffName = this.normalizeStaffName(staffName);
 		const existing = await this.prismaService.staffColorMap.findUnique({
-			where: { staffName: normalizedStaffName },
+			where: { shopId_staffName: { shopId: requireCurrentShopId(), staffName: normalizedStaffName } },
 		});
 		if (existing?.color) {
 			return existing.color;

@@ -2,9 +2,10 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
-import { UserStatus } from '@prisma/client';
+import { UserRole, UserStatus } from '@prisma/client';
 import { StringValue } from 'ms';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { ShopScopeService } from '../shops/shop-scope.service';
 import { LoginDto } from './dto/login.dto';
 
 type AuthTokenPayload = {
@@ -12,6 +13,8 @@ type AuthTokenPayload = {
 	username: string;
 	role: string;
 	uv: number;
+	shopId: string;
+	activeShopId?: string;
 };
 
 @Injectable()
@@ -20,6 +23,7 @@ export class AuthService {
 		private readonly prismaService: PrismaService,
 		private readonly jwtService: JwtService,
 		private readonly configService: ConfigService,
+		private readonly shopScopeService: ShopScopeService,
 	) {}
 
 	async login(dto: LoginDto) {
@@ -40,12 +44,17 @@ export class AuthService {
 			throw new UnauthorizedException('Invalid username or password');
 		}
 
+		// Employees always operate in their own shop; admins must explicitly select one.
+		const activeShopId = user.role === UserRole.ADMIN ? undefined : user.shopId;
+
 		return {
 			...this.buildTokenPair({
 				sub: user.id,
 				username: user.username,
 				role: user.role,
 				uv: this.getUserAuthVersion(user.updatedAt),
+				shopId: user.shopId,
+				activeShopId,
 			}),
 			user: {
 				id: user.id,
@@ -54,6 +63,40 @@ export class AuthService {
 				role: user.role,
 				status: user.status,
 			},
+			needsShopSelection: !activeShopId,
+			activeShopId: activeShopId ?? null,
+		};
+	}
+
+	async selectShop(userId: string, shopId: string) {
+		const user = await this.prismaService.user.findFirst({
+			where: { id: userId, status: UserStatus.ACTIVE, deletedAt: null },
+		});
+
+		if (!user) {
+			throw new UnauthorizedException('User is inactive or does not exist');
+		}
+
+		this.shopScopeService.assertAccess({ role: user.role, shopId: user.shopId }, shopId);
+		await this.shopScopeService.assertShopExists(shopId);
+
+		return {
+			...this.buildTokenPair({
+				sub: user.id,
+				username: user.username,
+				role: user.role,
+				uv: this.getUserAuthVersion(user.updatedAt),
+				shopId: user.shopId,
+				activeShopId: shopId,
+			}),
+			user: {
+				id: user.id,
+				username: user.username,
+				displayName: user.displayName,
+				role: user.role,
+				status: user.status,
+			},
+			activeShopId: shopId,
 		};
 	}
 
@@ -79,12 +122,25 @@ export class AuthService {
 				throw new UnauthorizedException('Session expired');
 			}
 
+			// Employees are always pinned to their own shop; admins keep whatever shop was
+			// active on the token being refreshed (if it's still valid for them).
+			let activeShopId = user.role === UserRole.ADMIN ? payload.activeShopId : user.shopId;
+			if (activeShopId) {
+				try {
+					this.shopScopeService.assertAccess({ role: user.role, shopId: user.shopId }, activeShopId);
+				} catch {
+					activeShopId = undefined;
+				}
+			}
+
 			return {
 				...this.buildTokenPair({
 					sub: user.id,
 					username: user.username,
 					role: user.role,
 					uv: this.getUserAuthVersion(user.updatedAt),
+					shopId: user.shopId,
+					activeShopId,
 				}),
 				user: {
 					id: user.id,
@@ -93,6 +149,8 @@ export class AuthService {
 					role: user.role,
 					status: user.status,
 				},
+				needsShopSelection: !activeShopId,
+				activeShopId: activeShopId ?? null,
 			};
 		} catch {
 			throw new UnauthorizedException('Invalid refresh token');
@@ -131,7 +189,8 @@ export class AuthService {
 			&& typeof payload.sub === 'string'
 			&& typeof payload.username === 'string'
 			&& typeof payload.role === 'string'
-			&& typeof payload.uv === 'number',
+			&& typeof payload.uv === 'number'
+			&& typeof payload.shopId === 'string',
 		);
 	}
 }

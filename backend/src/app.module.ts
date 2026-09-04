@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { HealthModule } from './health/health.module';
@@ -10,6 +11,8 @@ import { AuditModule } from './audit/audit.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { SeedModule } from './common/seed/seed.module';
 import { SystemSettingsModule } from './system-settings/system-settings.module';
+import { ShopsModule } from './shops/shops.module';
+import { ShopContextInterceptor } from './common/shop-context/shop-context.interceptor';
 
 @Module({
   imports: [
@@ -21,9 +24,13 @@ import { SystemSettingsModule } from './system-settings/system-settings.module';
     AppointmentsModule,
     AuditModule,
     SystemSettingsModule,
+    ShopsModule,
     SeedModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    { provide: APP_INTERCEPTOR, useClass: ShopContextInterceptor },
+  ],
 })
 export class AppModule {}

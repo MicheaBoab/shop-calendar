@@ -1,17 +1,19 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { AppointmentStatus, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { SHOP_SCOPED_PRISMA } from '../common/prisma/prisma.module';
+import type { ShopScopedPrismaClient } from '../common/prisma/prisma.module';
+import { requireCurrentShopId } from '../common/shop-context/shop-context';
 import { AuditService } from '../audit/audit.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserPasswordDto } from './dto/update-user-password.dto';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto';
-import { getPendingAssignmentEmployeeUsername } from '../common/pending-assignment';
+import { getPendingAssignmentEmployeeUsernameForShop } from '../common/pending-assignment';
 
 @Injectable()
 export class UsersService {
 	constructor(
-		private readonly prismaService: PrismaService,
+		@Inject(SHOP_SCOPED_PRISMA) private readonly prismaService: ShopScopedPrismaClient,
 		private readonly auditService: AuditService,
 	) {}
 
@@ -38,6 +40,7 @@ export class UsersService {
 			throw new BadRequestException('Only EMPLOYEE accounts can be created from this endpoint.');
 		}
 
+		const shopId = requireCurrentShopId();
 		const passwordHash = await bcrypt.hash(dto.password, 10);
 		const displayName = dto.displayName ?? dto.username;
 		const staffName = this.normalizeStaffName(displayName);
@@ -45,6 +48,7 @@ export class UsersService {
 		const created = await this.prismaService.$transaction(async (tx) => {
 			const createdUser = await tx.user.create({
 				data: {
+					shopId,
 					username: dto.username,
 					passwordHash,
 					displayName,
@@ -63,11 +67,11 @@ export class UsersService {
 
 			const resolvedColor = await this.getStaffColor(staffName);
 			const existingMapping = await tx.staffColorMap.findUnique({
-				where: { staffName },
+				where: { shopId_staffName: { shopId, staffName } },
 			});
 			if (!existingMapping) {
 				await tx.staffColorMap.create({
-					data: { staffName, color: resolvedColor },
+					data: { shopId, staffName, color: resolvedColor },
 				});
 			}
 
@@ -165,7 +169,7 @@ export class UsersService {
 		});
 		const resolvedColor = await this.getStaffColor(existing.displayName ?? existing.username);
 		const pendingEmployee = await this.prismaService.user.findFirst({
-			where: { username: getPendingAssignmentEmployeeUsername(), deletedAt: null },
+			where: { username: getPendingAssignmentEmployeeUsernameForShop(requireCurrentShopId()), deletedAt: null },
 			select: { id: true },
 		});
 		const now = new Date();
@@ -228,7 +232,7 @@ export class UsersService {
 	private async getStaffColor(staffName: string) {
 		const normalizedStaffName = this.normalizeStaffName(staffName);
 		const existing = await this.prismaService.staffColorMap.findUnique({
-			where: { staffName: normalizedStaffName },
+			where: { shopId_staffName: { shopId: requireCurrentShopId(), staffName: normalizedStaffName } },
 		});
 		if (existing?.color) {
 			return existing.color;

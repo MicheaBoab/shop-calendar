@@ -12,13 +12,21 @@ export function getPendingAssignmentEmployeeUsername(runtime?: PendingAssignment
   return trimmedOverride || DEFAULT_PENDING_EMPLOYEE_USERNAME;
 }
 
+// Each shop has its own pending-assignment placeholder employee, since usernames stay globally
+// unique. The shop id is appended so real employee usernames never collide with it.
+export function getPendingAssignmentEmployeeUsernameForShop(shopId: string, runtime?: PendingAssignmentRuntime) {
+  return `${getPendingAssignmentEmployeeUsername(runtime)}__${shopId}`;
+}
+
 export function isPendingAssignmentEmployeeUsername(username?: string | null, runtime?: PendingAssignmentRuntime) {
   const normalizedUsername = username?.trim();
   if (!normalizedUsername) {
     return false;
   }
 
-  return normalizedUsername === getPendingAssignmentEmployeeUsername(runtime);
+  const base = getPendingAssignmentEmployeeUsername(runtime);
+  // Matches both the legacy single-tenant username and the per-shop "<base>__<shopId>" form.
+  return normalizedUsername === base || normalizedUsername.startsWith(`${base}__`);
 }
 
 export function isPendingAssignmentEmployee(
