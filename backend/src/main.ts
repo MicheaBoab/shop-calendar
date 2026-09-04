@@ -5,6 +5,15 @@ import { GlobalExceptionFilter } from './common/filters/global-exception.filter'
 import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
 import { DefaultAdminSeed } from './common/seed/default-admin.seed';
 
+// Exported for unit testing: seed failures (e.g. DB not migrated yet) must not block app startup.
+export async function runSeedSafely(seedService: DefaultAdminSeed) {
+  try {
+    await seedService.run();
+  } catch (error) {
+    console.error('Default admin seed failed, continuing startup:', error);
+  }
+}
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors({
@@ -22,8 +31,12 @@ async function bootstrap() {
   app.useGlobalInterceptors(new RequestLoggingInterceptor());
 
   const seedService = app.get(DefaultAdminSeed);
-  await seedService.run();
+  await runSeedSafely(seedService);
 
   await app.listen(process.env.PORT ?? 3000);
 }
-bootstrap();
+
+// Avoid auto-running bootstrap when this module is imported (e.g. in tests).
+if (require.main === module) {
+  bootstrap();
+}
