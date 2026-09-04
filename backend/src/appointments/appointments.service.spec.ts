@@ -1,6 +1,14 @@
 import { AppointmentStatus } from '@prisma/client';
 import { AppointmentsService } from './appointments.service';
 
+// Fixed month/day one year ahead so it stays valid for validateTimeNotInPast regardless of when the suite runs.
+const futureIso = (hours: number, minutes: number) => {
+  const date = new Date();
+  date.setUTCFullYear(date.getUTCFullYear() + 1, 6, 28);
+  date.setUTCHours(hours, minutes, 0, 0);
+  return date.toISOString();
+};
+
 const makeAppointment = (overrides: Record<string, unknown> = {}) => ({
   id: 'appt-1',
   employeeId: 'emp-1',
@@ -31,6 +39,10 @@ describe('AppointmentsService', () => {
       create: jest.fn(),
       update: jest.fn(),
     },
+    staffColorMap: {
+      findUnique: jest.fn(),
+    },
+    $transaction: jest.fn(async (callback: (tx: unknown) => unknown) => callback(prismaService)),
   };
 
   const auditService = {
@@ -48,8 +60,11 @@ describe('AppointmentsService', () => {
   );
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
     prismaService.user.findFirst.mockResolvedValue(null);
+    prismaService.$transaction.mockImplementation(async (callback: (tx: unknown) => unknown) =>
+      callback(prismaService),
+    );
   });
 
   it('allows employee to edit another employee appointment and writes full audit payload', async () => {
@@ -70,8 +85,8 @@ describe('AppointmentsService', () => {
 
     const result = await service.updateAppointment('appt-2', {
       employeeId: 'emp-3',
-      startAt: '2026-07-28T15:00:00.000Z',
-      endAt: '2026-07-28T16:00:00.000Z',
+      startAt: futureIso(15, 0),
+      endAt: futureIso(16, 0),
       phone: '3125559999',
       price: '40.50',
       updatedById: 'employee-1',
@@ -203,8 +218,8 @@ describe('AppointmentsService', () => {
 
     const result = await service.createAppointment({
       employeeId: 'emp-1',
-      startAt: '2026-07-28T15:00:00.000Z',
-      endAt: '2026-07-28T16:00:00.000Z',
+      startAt: futureIso(15, 0),
+      endAt: futureIso(16, 0),
       phone: '3125551234',
       price: '25.00',
       createdById: 'admin-1',
@@ -236,8 +251,8 @@ describe('AppointmentsService', () => {
 
     const result = await service.createAppointment({
       employeeId: 'emp-1',
-      startAt: '2026-07-28T15:15:00.000Z',
-      endAt: '2026-07-28T15:45:00.000Z',
+      startAt: futureIso(15, 15),
+      endAt: futureIso(15, 45),
       phone: '3125551234',
       price: '25.00',
       createdById: 'admin-1',
@@ -256,8 +271,8 @@ describe('AppointmentsService', () => {
 
     const result = await service.createAppointment({
       employeeId: 'pending-id',
-      startAt: '2026-07-28T15:00:00.000Z',
-      endAt: '2026-07-28T16:00:00.000Z',
+      startAt: futureIso(15, 0),
+      endAt: futureIso(16, 0),
       phone: '3125551234',
       price: '25.00',
       createdById: 'admin-1',
@@ -266,5 +281,110 @@ describe('AppointmentsService', () => {
     expect(result.id).toBe('appt-pending');
     expect(prismaService.appointment.findFirst).not.toHaveBeenCalled();
     expect(prismaService.appointment.create).toHaveBeenCalled();
+  });
+
+  it('creates one record per selected employee plus pending fillers sharing a groupId', async () => {
+    prismaService.appointment.findFirst.mockResolvedValue(null); // no conflicts
+    prismaService.user.findFirst
+      .mockResolvedValueOnce({ id: 'pending-id' }) // getPendingAssignmentEmployeeId
+      .mockResolvedValueOnce({ displayName: 'Alice', username: 'alice' }) // emp-1 snapshot
+      .mockResolvedValueOnce({ displayName: 'Bob', username: 'bob' }) // emp-2 snapshot
+      .mockResolvedValueOnce({ displayName: 'Pending', username: 'pending_assignment' }); // pending snapshot
+
+    prismaService.appointment.create
+      .mockResolvedValueOnce(makeAppointment({ id: 'appt-1', employeeId: 'emp-1', groupId: 'group-1' }))
+      .mockResolvedValueOnce(makeAppointment({ id: 'appt-2', employeeId: 'emp-2', groupId: 'group-1' }))
+      .mockResolvedValueOnce(makeAppointment({ id: 'appt-3', employeeId: 'pending-id', groupId: 'group-1' }));
+
+    const result = await service.createAppointment({
+      employeeIds: ['emp-1', 'emp-2'],
+      partySize: 3,
+      startAt: '2026-09-10T15:00:00.000Z',
+      endAt: '2026-09-10T16:00:00.000Z',
+      phone: '3125551234',
+      price: '25.00',
+      createdById: 'admin-1',
+    } as any);
+
+    expect(result.pendingCount).toBe(1);
+    expect(result.appointments).toHaveLength(3);
+    expect(result.groupId).toEqual(expect.any(String));
+    expect(prismaService.appointment.create).toHaveBeenCalledTimes(3);
+    expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenCalledWith('admin-1');
+  });
+
+  it('rejects group creation when selected employees exceed party size', async () => {
+    await expect(
+      service.createAppointment({
+        employeeIds: ['emp-1', 'emp-2'],
+        partySize: 1,
+        startAt: '2026-09-10T15:00:00.000Z',
+        endAt: '2026-09-10T16:00:00.000Z',
+        phone: '3125551234',
+        price: '25.00',
+        createdById: 'admin-1',
+      } as any),
+    ).rejects.toThrow('Selected employees cannot exceed party size');
+  });
+
+  it('rejects group creation when an employee has a conflicting appointment', async () => {
+    prismaService.appointment.findFirst.mockResolvedValueOnce({ id: 'conflict-1' });
+
+    await expect(
+      service.createAppointment({
+        employeeIds: ['emp-1'],
+        partySize: 1,
+        startAt: '2026-09-10T15:00:00.000Z',
+        endAt: '2026-09-10T16:00:00.000Z',
+        phone: '3125551234',
+        price: '25.00',
+        createdById: 'admin-1',
+      } as any),
+    ).rejects.toThrow('overlaps an existing appointment');
+  });
+
+  it('updates a group by adding an employee and backfilling remaining pending slots', async () => {
+    const anchor = makeAppointment({ id: 'appt-1', employeeId: 'emp-1', groupId: 'group-1' });
+    const pendingMember = makeAppointment({ id: 'appt-2', employeeId: 'pending-id', groupId: 'group-1' });
+
+    prismaService.appointment.findFirst
+      .mockResolvedValueOnce(anchor) // getActiveAppointmentOrThrow
+      .mockResolvedValueOnce(null) // conflict check for kept emp-1
+      .mockResolvedValueOnce(null); // conflict check for new emp-3
+    prismaService.user.findFirst
+      .mockResolvedValueOnce({ id: 'pending-id' }) // getPendingAssignmentEmployeeId
+      .mockResolvedValueOnce({ displayName: 'Carol', username: 'carol' }); // snapshot for new employee
+    prismaService.appointment.findMany.mockResolvedValueOnce([anchor, pendingMember]);
+
+    prismaService.appointment.update
+      .mockResolvedValueOnce(makeAppointment({ id: 'appt-1', employeeId: 'emp-1', groupId: 'group-1' }))
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-2',
+          employeeId: 'pending-id',
+          groupId: 'group-1',
+          status: AppointmentStatus.CANCELLED,
+          deletedAt: new Date('2026-07-28T12:00:00.000Z'),
+        }),
+      );
+    prismaService.appointment.create.mockResolvedValueOnce(
+      makeAppointment({ id: 'appt-3', employeeId: 'emp-3', groupId: 'group-1' }),
+    );
+
+    const result = await service.updateAppointment('appt-1', {
+      employeeIds: ['emp-1', 'emp-3'],
+      partySize: 2,
+      startAt: '2026-09-10T15:00:00.000Z',
+      endAt: '2026-09-10T16:00:00.000Z',
+      updatedById: 'admin-1',
+    } as any);
+
+    expect(result.groupId).toBe('group-1');
+    expect(result.pendingCount).toBe(0);
+    expect(result.appointments.map((appointment: any) => appointment.employeeId).sort()).toEqual([
+      'emp-1',
+      'emp-3',
+    ]);
+    expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenCalledWith('admin-1');
   });
 });
