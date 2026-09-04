@@ -139,6 +139,59 @@ button, input, select, textarea { font: inherit; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
 .checkbox-group { display: flex; flex-wrap: wrap; gap: 10px; }
 .checkbox-option { flex-direction: row; align-items: center; gap: 6px; font-weight: 500; }
+.party-employee-row { align-items: flex-start; }
+.party-size-field { flex: 0 0 auto; min-width: 160px; }
+.party-size-control { margin-top: 0; align-items: center; flex-wrap: nowrap; }
+.party-size-control input {
+  width: 60px;
+  text-align: center;
+}
+.party-size-control button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.employee-field { flex: 1 1 240px; position: relative; }
+.employee-dropdown { position: relative; }
+.employee-dropdown-toggle {
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+}
+.employee-dropdown-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: linear-gradient(160deg, var(--card), var(--card-muted));
+  box-shadow: 0 12px 30px rgba(2, 6, 23, 0.45);
+}
+.shop-option-list { display: flex; flex-wrap: wrap; gap: 10px; }
+.shop-option-button {
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+}
+.shop-option-button:hover {
+  background: rgba(37, 99, 235, 0.22);
+}
+.shop-option-button.active {
+  background: var(--button);
+  border-color: var(--button);
+  color: #f8fafc;
+}
 label { display: flex; flex-direction: column; gap: 6px; font-weight: 600; color: var(--text); }
 .field-label { display: inline-flex; align-items: center; gap: 4px; }
 .field-label-note {

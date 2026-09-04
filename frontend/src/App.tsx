@@ -93,7 +93,6 @@ interface UserRecord {
 interface AppointmentFormState {
   employeeIds: string[];
   partySize: string;
-  includePending: boolean;
   startDate: string;
   startTime: string;
   durationMinutes: string;
@@ -214,7 +213,6 @@ const createInitialForm = (): AppointmentFormState => {
   return {
     employeeIds: [],
     partySize: '1',
-    includePending: false,
     startDate: formatDateForUsInput(today),
     startTime: '',
     durationMinutes: String(DEFAULT_APPOINTMENT_DURATION_MINUTES),
@@ -646,6 +644,7 @@ function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [todayAgendaMode, setTodayAgendaMode] = useState<TodayAgendaMode>('time');
+  const [employeeDropdownOpen, setEmployeeDropdownOpen] = useState(false);
   const [shopSelection, setShopSelection] = useState<{
     authForRequest: AuthResponse;
     shops: ShopSummary[];
@@ -735,6 +734,19 @@ function App() {
     () => employeeOptions.filter((user) => !isPendingAssignmentEmployee(user, pendingAssignmentRuntime)),
     [employeeOptions, pendingAssignmentRuntime],
   );
+
+  const nameListSeparator = locale === 'zh-CN' ? '、' : ', ';
+
+  const selectedEmployeeNamesLabel = useMemo(() => {
+    const names = form.employeeIds
+      .map((id) => assignableEmployeeOptions.find((user) => user.id === id)?.displayName)
+      .filter((name): name is string => Boolean(name));
+    return names.join(nameListSeparator);
+  }, [form.employeeIds, assignableEmployeeOptions, nameListSeparator]);
+
+  const partySizeValue = Math.max(1, parseInt(form.partySize, 10) || 1);
+
+  const pendingAutoCount = Math.max(0, partySizeValue - form.employeeIds.length);
 
   const employeeColorMap = useMemo(() => {
     const colorMap = new Map<string, string>();
@@ -1211,19 +1223,6 @@ function App() {
       return;
     }
 
-    if (selectedEmployeeIds.length > partySize) {
-      setNotice(t('notices.partySizeExceeded'), 'error');
-      return;
-    }
-
-    if (selectedEmployeeIds.length < partySize && !form.includePending) {
-      setNotice(
-        t('notices.pendingRequired', { selected: String(selectedEmployeeIds.length), partySize: String(partySize) }),
-        'error',
-      );
-      return;
-    }
-
     if (!form.durationMinutes.trim()) {
       setNotice(t('notices.durationRequired'), 'error');
       return;
@@ -1333,12 +1332,10 @@ function App() {
     const realMembers = groupMembers.filter(
       (member) => !pendingEmployee || member.employeeId !== pendingEmployee.id,
     );
-    const pendingMemberCount = groupMembers.length - realMembers.length;
 
     setForm({
       employeeIds: realMembers.map((member) => member.employeeId),
       partySize: String(groupMembers.length || 1),
-      includePending: pendingMemberCount > 0,
       startDate: formatDateForUsInput(startAt),
       startTime: formatTimeOnlyForInput(startAt),
       durationMinutes: String(
@@ -1948,30 +1945,40 @@ function App() {
   if (!auth && shopSelection) {
     return (
       <div className="app-shell">
-        <div className="card">
-          <h1>{t('app.title')}</h1>
-          <h2>{t('shopSelect.title')}</h2>
-          <p>{t('shopSelect.subtitle')}</p>
-          {shopSelection.loading ? (
-            <p>{t('shopSelect.loading')}</p>
-          ) : (
-            <div className="stack">
-              <select value={selectedShopId} onChange={(e) => setSelectedShopId(e.target.value)}>
-                {shopSelection.shops.map((shop) => (
-                  <option key={shop.id} value={shop.id}>{shop.name}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={loading || !selectedShopId}
-                onClick={() => void confirmShopSelection(selectedShopId)}
-              >
-                {t('shopSelect.confirm')}
-              </button>
-            </div>
-          )}
-          {shopSelection.error ? <p className="message error">{shopSelection.error}</p> : null}
-          {message ? <p className={`message ${messageTone}`}>{message}</p> : null}
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="card">
+            <h1>{t('app.title')}</h1>
+            <h2>{t('shopSelect.title')}</h2>
+            <p>{t('shopSelect.subtitle')}</p>
+            {shopSelection.loading ? (
+              <p>{t('shopSelect.loading')}</p>
+            ) : (
+              <div className="stack">
+                <div className="shop-option-list" role="listbox" aria-label={t('shopSelect.title')}>
+                  {shopSelection.shops.map((shop) => (
+                    <button
+                      key={shop.id}
+                      type="button"
+                      className={`shop-option-button${selectedShopId === shop.id ? ' active' : ''}`}
+                      aria-pressed={selectedShopId === shop.id}
+                      onClick={() => setSelectedShopId(shop.id)}
+                    >
+                      {shop.name}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  disabled={loading || !selectedShopId}
+                  onClick={() => void confirmShopSelection(selectedShopId)}
+                >
+                  {t('shopSelect.confirm')}
+                </button>
+              </div>
+            )}
+            {shopSelection.error ? <p className="message error">{shopSelection.error}</p> : null}
+            {message ? <p className={`message ${messageTone}`}>{message}</p> : null}
+          </div>
         </div>
       </div>
     );
@@ -2018,11 +2025,19 @@ function App() {
               <p>{t('shopSelect.loading')}</p>
             ) : (
               <div className="stack">
-                <select value={selectedShopId} onChange={(e) => setSelectedShopId(e.target.value)}>
+                <div className="shop-option-list" role="listbox" aria-label={t('shopSelect.title')}>
                   {shopSelection.shops.map((shop) => (
-                    <option key={shop.id} value={shop.id}>{shop.name}</option>
+                    <button
+                      key={shop.id}
+                      type="button"
+                      className={`shop-option-button${selectedShopId === shop.id ? ' active' : ''}`}
+                      aria-pressed={selectedShopId === shop.id}
+                      onClick={() => setSelectedShopId(shop.id)}
+                    >
+                      {shop.name}
+                    </button>
                   ))}
-                </select>
+                </div>
                 <div className="stack-row">
                   <button
                     type="button"
@@ -2127,70 +2142,96 @@ function App() {
                 </div>
               ) : null}
               <form onSubmit={handleCreateOrUpdate} className="stack">
-                <label>
-                  <span className="field-label">{t('editor.partySize')}</span>
-                  <div className="row">
-                    <button
-                      type="button"
-                      onClick={() => setForm((current) => ({
-                        ...current,
-                        partySize: String(Math.max(1, (parseInt(current.partySize, 10) || 1) - 1)),
-                      }))}
-                    >
-                      -1
-                    </button>
-                    <input
-                      type="number"
-                      min={1}
-                      max={99}
-                      value={form.partySize}
-                      onChange={(e) => setForm({ ...form, partySize: e.target.value })}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setForm((current) => ({
-                        ...current,
-                        partySize: String(Math.min(99, (parseInt(current.partySize, 10) || 1) + 1)),
-                      }))}
-                    >
-                      +1
-                    </button>
-                  </div>
-                </label>
-                <label>
-                  <span className="field-label">{t('editor.employee')}</span>
-                  <div className="checkbox-group" role="group" aria-label={t('editor.employee')}>
-                    {assignableEmployeeOptions.map((user) => {
-                      const checked = form.employeeIds.includes(user.id);
-                      return (
-                        <label key={user.id} className="checkbox-option">
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) => setForm((current) => ({
-                              ...current,
-                              employeeIds: e.target.checked
-                                ? [...current.employeeIds, user.id]
-                                : current.employeeIds.filter((id) => id !== user.id),
-                            }))}
-                          />
-                          {user.displayName}
-                        </label>
-                      );
-                    })}
-                    {pendingEmployee ? (
-                      <label className="checkbox-option">
-                        <input
-                          type="checkbox"
-                          checked={form.includePending}
-                          onChange={(e) => setForm({ ...form, includePending: e.target.checked })}
-                        />
-                        {t('editor.pendingAssignment')}
-                      </label>
-                    ) : null}
-                  </div>
-                  <span className="hint">{t('editor.includePending')}</span>
-                </label>
+                <div className="row party-employee-row">
+                  <label className="party-size-field">
+                    <span className="field-label">{t('editor.partySize')}</span>
+                    <div className="row quick-date-shortcuts party-size-control">
+                      <button
+                        type="button"
+                        disabled={partySizeValue <= Math.max(1, form.employeeIds.length)}
+                        onClick={() => setForm((current) => {
+                          const minValue = Math.max(1, current.employeeIds.length);
+                          const currentValue = parseInt(current.partySize, 10) || 1;
+                          return { ...current, partySize: String(Math.max(minValue, currentValue - 1)) };
+                        })}
+                      >
+                        -1
+                      </button>
+                      <input
+                        type="number"
+                        min={1}
+                        max={99}
+                        value={form.partySize}
+                        onChange={(e) => setForm({ ...form, partySize: e.target.value })}
+                        onBlur={() => setForm((current) => {
+                          const minValue = Math.max(1, current.employeeIds.length);
+                          const parsed = parseInt(current.partySize, 10);
+                          const clamped = Number.isFinite(parsed) ? Math.min(99, Math.max(minValue, parsed)) : minValue;
+                          return { ...current, partySize: String(clamped) };
+                        })}
+                      />
+                      <button
+                        type="button"
+                        disabled={partySizeValue >= 99}
+                        onClick={() => setForm((current) => ({
+                          ...current,
+                          partySize: String(Math.min(99, (parseInt(current.partySize, 10) || 1) + 1)),
+                        }))}
+                      >
+                        +1
+                      </button>
+                    </div>
+                  </label>
+                  <label className="employee-field">
+                    <span className="field-label">{t('editor.employee')}</span>
+                    <div className="employee-dropdown">
+                      <button
+                        type="button"
+                        className="employee-dropdown-toggle"
+                        aria-expanded={employeeDropdownOpen}
+                        aria-haspopup="listbox"
+                        onClick={() => setEmployeeDropdownOpen((open) => !open)}
+                      >
+                        {selectedEmployeeNamesLabel || t('editor.selectEmployee')}
+                      </button>
+                      {employeeDropdownOpen ? (
+                        <div className="employee-dropdown-panel" role="group" aria-label={t('editor.employee')}>
+                          {assignableEmployeeOptions.map((user) => {
+                            const checked = form.employeeIds.includes(user.id);
+                            return (
+                              <label key={user.id} className="checkbox-option">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => setForm((current) => {
+                                    const nextEmployeeIds = e.target.checked
+                                      ? [...current.employeeIds, user.id]
+                                      : current.employeeIds.filter((id) => id !== user.id);
+                                    const currentPartySize = parseInt(current.partySize, 10) || 1;
+                                    const nextPartySize = nextEmployeeIds.length > currentPartySize
+                                      ? nextEmployeeIds.length
+                                      : currentPartySize;
+                                    return {
+                                      ...current,
+                                      employeeIds: nextEmployeeIds,
+                                      partySize: String(nextPartySize),
+                                    };
+                                  })}
+                                />
+                                {user.displayName}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                    <span className="hint">
+                      {pendingAutoCount > 0
+                        ? t('editor.pendingAutoHint', { count: String(pendingAutoCount) })
+                        : t('editor.pendingNone')}
+                    </span>
+                  </label>
+                </div>
                 <div className="row">
                   <label>
                     <span className="field-label">

@@ -251,7 +251,7 @@ describe('App shop selection', () => {
     vi.unstubAllGlobals();
   });
 
-  it('shows the shop selection dropdown and Continue button for an admin whose login requires shop selection', async () => {
+  it('shows the shop selection buttons and Continue button for an admin whose login requires shop selection', async () => {
     const shops: ShopFixture[] = [
       { id: 'shop-1', name: 'Main St' },
       { id: 'shop-2', name: 'Second St' },
@@ -269,9 +269,8 @@ describe('App shop selection', () => {
 
     expect(container.textContent).toContain('Choose which shop you want to manage.');
 
-    const select = container.querySelector('select') as HTMLSelectElement | null;
-    expect(select).not.toBeNull();
-    const optionLabels = Array.from(select!.querySelectorAll('option')).map((option) => option.textContent?.trim());
+    const shopButtons = Array.from(container.querySelectorAll('.shop-option-button'));
+    const optionLabels = shopButtons.map((button) => button.textContent?.trim());
     expect(optionLabels).toEqual(['Main St', 'Second St']);
 
     const continueButton = findButtonByLabel(container, 'Continue');
@@ -319,8 +318,7 @@ describe('App shop selection', () => {
     await login(container, 'ADMIN');
     await waitFor(() => container.textContent?.includes('Select a shop') ?? false);
 
-    const select = container.querySelector('select') as HTMLSelectElement;
-    await setControlValue(select, 'shop-2');
+    await clickButton(container, 'Second St');
 
     await clickButton(container, 'Continue');
     await waitFor(() => container.textContent?.includes('Signed in as') ?? false);
@@ -391,7 +389,7 @@ describe('App shop selection', () => {
     await login(container, 'ADMIN');
     await waitFor(() => container.textContent?.includes('Loading shops...') ?? false);
 
-    expect(container.querySelector('select')).toBeNull();
+    expect(container.querySelector('.shop-option-button')).toBeNull();
     expect(findButtonByLabel(container, 'Continue')).toBeNull();
 
     await act(async () => {
@@ -400,7 +398,7 @@ describe('App shop selection', () => {
     });
     await flush();
 
-    await waitFor(() => container.querySelector('select') !== null);
+    await waitFor(() => container.querySelector('.shop-option-button') !== null);
     expect(container.textContent).not.toContain('Loading shops...');
 
     await cleanupRender(root, container);
@@ -426,7 +424,7 @@ describe('App shop selection', () => {
     const errorMessage = Array.from(container.querySelectorAll('p')).find((p) => p.textContent?.includes('Shops unavailable'));
     expect(errorMessage).toBeDefined();
     expect(errorMessage?.className).toContain('error');
-    expect(container.querySelector('select')?.querySelectorAll('option').length ?? 0).toBe(0);
+    expect(container.querySelectorAll('.shop-option-button').length).toBe(0);
 
     await cleanupRender(root, container);
   });
