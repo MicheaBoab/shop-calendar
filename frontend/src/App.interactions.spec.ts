@@ -595,3 +595,175 @@ describe('App interaction seams', () => {
     await cleanupRender(root, container);
   });
 });
+
+const makeEmployeeSelectionFetchMock = () => {
+  const auth = {
+    accessToken: 'access-token',
+    refreshToken: 'refresh-token',
+    tokenType: 'Bearer',
+    user: {
+      id: 'admin-1',
+      username: 'admin',
+      displayName: 'Admin User',
+      role: 'ADMIN',
+      status: 'ACTIVE',
+    },
+  };
+
+  const users = [
+    { id: 'admin-1', username: 'admin', displayName: 'Admin User', role: 'ADMIN', status: 'ACTIVE' },
+    { id: 'emp-1', username: 'anna', displayName: 'Anna', role: 'EMPLOYEE', status: 'ACTIVE' },
+    { id: 'emp-2', username: 'ben', displayName: 'Ben', role: 'EMPLOYEE', status: 'ACTIVE' },
+    { id: 'emp-3', username: 'cara', displayName: 'Cara', role: 'EMPLOYEE', status: 'ACTIVE' },
+  ];
+
+  const ok = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+
+    if (url.endsWith('/auth/login') && method === 'POST') {
+      return ok(auth);
+    }
+
+    if (url.includes('/users') && method === 'GET') {
+      return ok(users);
+    }
+
+    if (url.includes('/appointments') && method === 'GET') {
+      return ok([]);
+    }
+
+    if (url.includes('/system-settings/calendar-window') && method === 'GET') {
+      return ok({ slotMinTime: '08:00:00', slotMaxTime: '20:00:00' });
+    }
+
+    return ok({});
+  });
+};
+
+const renderAndLoginForEmployeeSelection = async () => {
+  setViewportWidth(1280);
+  (globalThis as any).EventSource = MockEventSource;
+  const fetchMock = makeEmployeeSelectionFetchMock();
+  vi.stubGlobal('fetch', fetchMock);
+
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(React.createElement(I18nProvider, null, React.createElement(App)));
+  });
+
+  const loginForm = container.querySelector('form');
+  if (!loginForm) {
+    throw new Error('Login form not found');
+  }
+
+  const loginInputs = Array.from(loginForm.querySelectorAll('input')) as HTMLInputElement[];
+  await setControlValue(loginInputs[0], 'admin');
+  await setControlValue(loginInputs[1], 'admin123');
+
+  await act(async () => {
+    loginForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  });
+
+  await waitFor(() => container.textContent?.includes('Signed in as') ?? false);
+  await flush();
+
+  return { container, root };
+};
+
+const openEmployeeDropdown = async (container: HTMLElement) => {
+  const toggle = container.querySelector('.employee-dropdown-toggle') as HTMLButtonElement | null;
+  if (!toggle) {
+    throw new Error('Employee dropdown toggle not found');
+  }
+  await clickElement(toggle);
+};
+
+const findEmployeeCheckbox = (container: HTMLElement, displayName: string) => {
+  const options = Array.from(container.querySelectorAll('.employee-dropdown-panel .checkbox-option'));
+  const match = options.find((option) => option.textContent?.trim() === displayName);
+  return (match?.querySelector('input[type="checkbox"]') ?? null) as HTMLInputElement | null;
+};
+
+const toggleCheckbox = async (checkbox: HTMLInputElement) => {
+  await act(async () => {
+    checkbox.click();
+  });
+};
+
+describe('App employee selection checkbox behavior', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    document.body.innerHTML = '';
+    setMockCalendarNoteState(false);
+    setMobilePointerMode(false);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('replaces the previously checked employee instead of adjusting party size when party size is 1', async () => {
+    const { container, root } = await renderAndLoginForEmployeeSelection();
+
+    const partySizeInput = findControlInLabel(container, 'Party size', 'input') as HTMLInputElement | null;
+    expect(partySizeInput?.value).toBe('1');
+
+    await openEmployeeDropdown(container);
+    const annaCheckbox = findEmployeeCheckbox(container, 'Anna');
+    const benCheckbox = findEmployeeCheckbox(container, 'Ben');
+    expect(annaCheckbox).not.toBeNull();
+    expect(benCheckbox).not.toBeNull();
+
+    await toggleCheckbox(annaCheckbox as HTMLInputElement);
+    expect((annaCheckbox as HTMLInputElement).checked).toBe(true);
+
+    await toggleCheckbox(benCheckbox as HTMLInputElement);
+
+    expect((benCheckbox as HTMLInputElement).checked).toBe(true);
+    expect((annaCheckbox as HTMLInputElement).checked).toBe(false);
+    expect((partySizeInput as HTMLInputElement).value).toBe('1');
+
+    await cleanupRender(root, container);
+  });
+
+  it('blocks checking an extra employee and shows a notice once selected count reaches party size', async () => {
+    const { container, root } = await renderAndLoginForEmployeeSelection();
+
+    const partySizeInput = findControlInLabel(container, 'Party size', 'input') as HTMLInputElement | null;
+    expect(partySizeInput).not.toBeNull();
+    await setControlValue(partySizeInput as HTMLInputElement, '2');
+
+    await openEmployeeDropdown(container);
+    const annaCheckbox = findEmployeeCheckbox(container, 'Anna');
+    const benCheckbox = findEmployeeCheckbox(container, 'Ben');
+    const caraCheckbox = findEmployeeCheckbox(container, 'Cara');
+    expect(annaCheckbox).not.toBeNull();
+    expect(benCheckbox).not.toBeNull();
+    expect(caraCheckbox).not.toBeNull();
+
+    await toggleCheckbox(annaCheckbox as HTMLInputElement);
+    await toggleCheckbox(benCheckbox as HTMLInputElement);
+
+    expect((annaCheckbox as HTMLInputElement).checked).toBe(true);
+    expect((benCheckbox as HTMLInputElement).checked).toBe(true);
+
+    await toggleCheckbox(caraCheckbox as HTMLInputElement);
+
+    expect((caraCheckbox as HTMLInputElement).checked).toBe(false);
+    expect((annaCheckbox as HTMLInputElement).checked).toBe(true);
+    expect((benCheckbox as HTMLInputElement).checked).toBe(true);
+    expect((partySizeInput as HTMLInputElement).value).toBe('2');
+
+    const notice = container.querySelector('.message.error');
+    expect(notice?.textContent).toContain('reached the party size');
+
+    await cleanupRender(root, container);
+  });
+});

@@ -2203,20 +2203,28 @@ function App() {
                                 <input
                                   type="checkbox"
                                   checked={checked}
-                                  onChange={(e) => setForm((current) => {
-                                    const nextEmployeeIds = e.target.checked
-                                      ? [...current.employeeIds, user.id]
-                                      : current.employeeIds.filter((id) => id !== user.id);
-                                    const currentPartySize = parseInt(current.partySize, 10) || 1;
-                                    const nextPartySize = nextEmployeeIds.length > currentPartySize
-                                      ? nextEmployeeIds.length
-                                      : currentPartySize;
-                                    return {
+                                  onChange={(e) => {
+                                    if (!e.target.checked) {
+                                      setForm((current) => ({
+                                        ...current,
+                                        employeeIds: current.employeeIds.filter((id) => id !== user.id),
+                                      }));
+                                      return;
+                                    }
+                                    if (partySizeValue === 1) {
+                                      // Single-slot party: newly checked employee replaces any prior selection.
+                                      setForm((current) => ({ ...current, employeeIds: [user.id] }));
+                                      return;
+                                    }
+                                    if (form.employeeIds.length >= partySizeValue) {
+                                      setNotice(t('notices.employeeCapReached'), 'error');
+                                      return;
+                                    }
+                                    setForm((current) => ({
                                       ...current,
-                                      employeeIds: nextEmployeeIds,
-                                      partySize: String(nextPartySize),
-                                    };
-                                  })}
+                                      employeeIds: [...current.employeeIds, user.id],
+                                    }));
+                                  }}
                                 />
                                 {user.displayName}
                               </label>
