@@ -1,6 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { SHOP_SCOPED_PRISMA } from '../common/prisma/prisma.module';
+import type { ShopScopedPrismaClient } from '../common/prisma/prisma.module';
+import { requireCurrentShopId } from '../common/shop-context/shop-context';
 
 type AppointmentAuditChange = {
 	actorUserId: string;
@@ -34,7 +36,7 @@ type ListAuditLogsQuery = {
 
 @Injectable()
 export class AuditService {
-	constructor(private readonly prismaService: PrismaService) {}
+	constructor(@Inject(SHOP_SCOPED_PRISMA) private readonly prismaService: ShopScopedPrismaClient) {}
 
 	async recordAppointmentChange(change: AppointmentAuditChange) {
 		await this.createAuditLog({
@@ -60,7 +62,10 @@ export class AuditService {
 
 	async listAuditLogs(query: ListAuditLogsQuery) {
 		const skip = (query.page - 1) * query.limit;
-		const where = query.entityType ? { entityType: query.entityType } : undefined;
+		const where = {
+			shopId: requireCurrentShopId(),
+			...(query.entityType ? { entityType: query.entityType } : {}),
+		};
 
 		const [total, items] = await this.prismaService.$transaction([
 			this.prismaService.auditLog.count({ where }),
@@ -109,6 +114,7 @@ export class AuditService {
 	}) {
 		await this.prismaService.auditLog.create({
 			data: {
+				shopId: requireCurrentShopId(),
 				actorUserId: change.actorUserId,
 				action: change.action,
 				entityType: change.entityType,

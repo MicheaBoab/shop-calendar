@@ -1,6 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import { SystemSettingsService } from './system-settings.service';
 
+jest.mock('../common/shop-context/shop-context', () => ({
+  requireCurrentShopId: jest.fn(() => 'prosper'),
+}));
+
 describe('SystemSettingsService', () => {
   it('returns fallback defaults when no record exists', async () => {
     const prismaMock = {

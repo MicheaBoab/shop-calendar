@@ -55,11 +55,19 @@ interface AuthResponse {
   refreshToken: string;
   tokenType: string;
   user: UserSummary;
+  needsShopSelection?: boolean;
+  activeShopId?: string | null;
+}
+
+interface ShopSummary {
+  id: string;
+  name: string;
 }
 
 interface AppointmentRecord {
   id: string;
   employeeId: string;
+  groupId?: string | null;
   employeeDisplayName?: string | null;
   employeeColor?: string | null;
   startAt: string;
@@ -83,7 +91,9 @@ interface UserRecord {
 }
 
 interface AppointmentFormState {
-  employeeId: string;
+  employeeIds: string[];
+  partySize: string;
+  includePending: boolean;
   startDate: string;
   startTime: string;
   durationMinutes: string;
@@ -202,7 +212,9 @@ const persistAuth = (auth: AuthResponse | null) => {
 const createInitialForm = (): AppointmentFormState => {
   const today = new Date();
   return {
-    employeeId: '',
+    employeeIds: [],
+    partySize: '1',
+    includePending: false,
     startDate: formatDateForUsInput(today),
     startTime: '',
     durationMinutes: String(DEFAULT_APPOINTMENT_DURATION_MINUTES),
@@ -634,6 +646,14 @@ function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [todayAgendaMode, setTodayAgendaMode] = useState<TodayAgendaMode>('time');
+  const [shopSelection, setShopSelection] = useState<{
+    authForRequest: AuthResponse;
+    shops: ShopSummary[];
+    loading: boolean;
+    error: string;
+  } | null>(null);
+  const [selectedShopId, setSelectedShopId] = useState('');
+  const [availableShops, setAvailableShops] = useState<ShopSummary[]>([]);
   const calendarRef = useRef<FullCalendar | null>(null);
   const calendarEventTooltipCleanupRef = useRef<Map<HTMLElement, CalendarNoteTooltipCleanup>>(new Map());
   const sseConnectionRef = useRef<EventSource | null>(null);
@@ -824,6 +844,61 @@ function App() {
     setNotice(notice, 'error');
   }, [clearAuthState]);
 
+  const beginShopSelection = useCallback(async (authForRequest: AuthResponse) => {
+    setShopSelection({ authForRequest, shops: [], loading: true, error: '' });
+    try {
+      const response = await fetch(`${API_BASE_URL}/shops`, {
+        headers: { Authorization: `Bearer ${authForRequest.accessToken}` },
+      });
+      const data = await response.json();
+      if (!response.ok || !Array.isArray(data)) {
+        throw new Error(data?.message ?? t('shopSelect.failedToLoad'));
+      }
+      setAvailableShops(data);
+      setShopSelection({ authForRequest, shops: data, loading: false, error: '' });
+      setSelectedShopId((current) => current || data[0]?.id || '');
+    } catch (error) {
+      setShopSelection({
+        authForRequest,
+        shops: [],
+        loading: false,
+        error: error instanceof Error ? error.message : t('shopSelect.failedToLoad'),
+      });
+    }
+  }, [t]);
+
+  const confirmShopSelection = useCallback(async (shopId: string) => {
+    if (!shopSelection) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/select-shop`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${shopSelection.authForRequest.accessToken}`,
+        },
+        body: JSON.stringify({ shopId }),
+      });
+      const data = await response.json();
+      if (!response.ok || !isAuthResponse(data)) {
+        throw new Error(data?.message ?? t('shopSelect.failedToSelect'));
+      }
+      applyAuthState(data);
+      setShopSelection(null);
+      setNotice(t('notices.signedInAs', { displayName: data.user.displayName }), 'success');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : t('shopSelect.failedToSelect'), 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [applyAuthState, shopSelection, t]);
+
+  const cancelShopSelection = useCallback(() => {
+    setShopSelection(null);
+  }, []);
+
   const parseStartTimeInput = useCallback((value: string) => {
     const startMinutes = parseClockToMinutes(calendarWindow.slotMinTime);
     const endMinutes = parseClockToMinutes(calendarWindow.slotMaxTime);
@@ -867,6 +942,11 @@ function App() {
           throw new Error(t('notices.sessionExpired'));
         }
 
+        if (parsed.needsShopSelection) {
+          void beginShopSelection(parsed);
+          return parsed;
+        }
+
         applyAuthState(parsed);
         return parsed;
       } catch {
@@ -882,7 +962,7 @@ function App() {
 
     refreshInFlightRef.current = run;
     return run;
-  }, [applyAuthState, clearAuthState, t]);
+  }, [applyAuthState, beginShopSelection, clearAuthState, t]);
 
   useEffect(() => {
     const storedAuth = initialStoredAuthRef.current;
@@ -990,6 +1070,21 @@ function App() {
   }, [loadAppointments]);
 
   useEffect(() => {
+    if (!auth || auth.user.role !== 'ADMIN') {
+      return;
+    }
+    fetchJson('/shops')
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setAvailableShops(data);
+        }
+      })
+      .catch(() => {
+        // Non-critical: only used to render a friendly shop name in the topbar.
+      });
+  }, [auth?.accessToken, auth?.user.role]);
+
+  useEffect(() => {
     if (!auth) {
       setCalendarWindow({
         slotMinTime: CALENDAR_SLOT_MIN_TIME,
@@ -1075,6 +1170,11 @@ function App() {
         throw new Error(t('notices.loginFailed'));
       }
 
+      if (data.needsShopSelection) {
+        await beginShopSelection(data);
+        return;
+      }
+
       applyAuthState(data);
       setNotice(t('notices.signedInAs', { displayName: data.user.displayName }), 'success');
     } catch (error) {
@@ -1086,7 +1186,15 @@ function App() {
 
   const handleLogout = () => {
     clearAuthState();
+    setShopSelection(null);
     setNotice(t('notices.signedOut'), 'info');
+  };
+
+  const handleSwitchShop = () => {
+    if (!auth) {
+      return;
+    }
+    void beginShopSelection(auth);
   };
 
   const handleCreateOrUpdate = async (event: React.FormEvent) => {
@@ -1095,10 +1203,24 @@ function App() {
       return;
     }
 
-    const selectedEmployeeId = form.employeeId || pendingEmployee?.id || '';
+    const partySize = Math.max(1, parseInt(form.partySize, 10) || 1);
+    const selectedEmployeeIds = form.employeeIds;
 
-    if (!selectedEmployeeId || !form.startDate || !form.startTime || !form.phone) {
+    if (!form.startDate || !form.startTime || !form.phone) {
       setNotice(t('notices.fillRequired'), 'error');
+      return;
+    }
+
+    if (selectedEmployeeIds.length > partySize) {
+      setNotice(t('notices.partySizeExceeded'), 'error');
+      return;
+    }
+
+    if (selectedEmployeeIds.length < partySize && !form.includePending) {
+      setNotice(
+        t('notices.pendingRequired', { selected: String(selectedEmployeeIds.length), partySize: String(partySize) }),
+        'error',
+      );
       return;
     }
 
@@ -1162,7 +1284,8 @@ function App() {
     setNotice('');
     try {
       const payload = {
-        employeeId: selectedEmployeeId,
+        employeeIds: selectedEmployeeIds,
+        partySize,
         startAt: startAt.toISOString(),
         endAt: endAt.toISOString(),
         phone: form.phone,
@@ -1196,13 +1319,26 @@ function App() {
     }
   };
 
-  const handleEdit = (appointment: AppointmentRecord) => {
+  const handleEdit = async (appointment: AppointmentRecord) => {
     setEditingId(appointment.id);
     setNotice(t('notices.editingExisting'), 'info');
     const startAt = new Date(appointment.startAt);
     const endAt = new Date(appointment.endAt);
+
+    // Linked-edit groups: pull sibling records so headcount/employee selection reflects the whole group.
+    const groupMembers = appointment.groupId
+      ? ((await fetchJson(`/appointments?groupId=${appointment.groupId}`)) as AppointmentRecord[])
+      : [appointment];
+
+    const realMembers = groupMembers.filter(
+      (member) => !pendingEmployee || member.employeeId !== pendingEmployee.id,
+    );
+    const pendingMemberCount = groupMembers.length - realMembers.length;
+
     setForm({
-      employeeId: pendingEmployee && appointment.employeeId === pendingEmployee.id ? '' : appointment.employeeId,
+      employeeIds: realMembers.map((member) => member.employeeId),
+      partySize: String(groupMembers.length || 1),
+      includePending: pendingMemberCount > 0,
       startDate: formatDateForUsInput(startAt),
       startTime: formatTimeOnlyForInput(startAt),
       durationMinutes: String(
@@ -1809,6 +1945,38 @@ function App() {
     );
   }
 
+  if (!auth && shopSelection) {
+    return (
+      <div className="app-shell">
+        <div className="card">
+          <h1>{t('app.title')}</h1>
+          <h2>{t('shopSelect.title')}</h2>
+          <p>{t('shopSelect.subtitle')}</p>
+          {shopSelection.loading ? (
+            <p>{t('shopSelect.loading')}</p>
+          ) : (
+            <div className="stack">
+              <select value={selectedShopId} onChange={(e) => setSelectedShopId(e.target.value)}>
+                {shopSelection.shops.map((shop) => (
+                  <option key={shop.id} value={shop.id}>{shop.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={loading || !selectedShopId}
+                onClick={() => void confirmShopSelection(selectedShopId)}
+              >
+                {t('shopSelect.confirm')}
+              </button>
+            </div>
+          )}
+          {shopSelection.error ? <p className="message error">{shopSelection.error}</p> : null}
+          {message ? <p className={`message ${messageTone}`}>{message}</p> : null}
+        </div>
+      </div>
+    );
+  }
+
   if (!auth) {
     return (
       <div className="app-shell">
@@ -1837,15 +2005,51 @@ function App() {
   const showOverviewPanel = isAdmin && adminPanel === 'overview';
   const showAdminPanel = isAdmin && adminPanel === 'admin';
   const showLogsPanel = isAdmin && adminPanel === 'logs';
+  const currentShopName = availableShops.find((shop) => shop.id === auth.activeShopId)?.name ?? auth.activeShopId ?? '';
 
   return (
     <div className="app-shell">
+      {shopSelection ? (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="card">
+            <h2>{t('shopSelect.title')}</h2>
+            <p>{t('shopSelect.subtitle')}</p>
+            {shopSelection.loading ? (
+              <p>{t('shopSelect.loading')}</p>
+            ) : (
+              <div className="stack">
+                <select value={selectedShopId} onChange={(e) => setSelectedShopId(e.target.value)}>
+                  {shopSelection.shops.map((shop) => (
+                    <option key={shop.id} value={shop.id}>{shop.name}</option>
+                  ))}
+                </select>
+                <div className="stack-row">
+                  <button
+                    type="button"
+                    disabled={loading || !selectedShopId}
+                    onClick={() => void confirmShopSelection(selectedShopId)}
+                  >
+                    {t('shopSelect.confirm')}
+                  </button>
+                  <button type="button" onClick={cancelShopSelection}>{t('shopSelect.cancel')}</button>
+                </div>
+              </div>
+            )}
+            {shopSelection.error ? <p className="message error">{shopSelection.error}</p> : null}
+          </div>
+        </div>
+      ) : null}
       <header className="topbar">
         <div>
           <h1>{t('app.title')}</h1>
           <p>{t('topbar.signedInAs', { displayName: auth.user.displayName, role: auth.user.role })}</p>
         </div>
         <div className="topbar-actions">
+          {isAdmin ? (
+            <button type="button" onClick={handleSwitchShop}>
+              {t('topbar.switchShop', { shopName: currentShopName })}
+            </button>
+          ) : null}
           <div className="locale-toggle" role="group" aria-label={t('topbar.localeSwitch')}>
             <button
               type="button"
@@ -1924,13 +2128,68 @@ function App() {
               ) : null}
               <form onSubmit={handleCreateOrUpdate} className="stack">
                 <label>
+                  <span className="field-label">{t('editor.partySize')}</span>
+                  <div className="row">
+                    <button
+                      type="button"
+                      onClick={() => setForm((current) => ({
+                        ...current,
+                        partySize: String(Math.max(1, (parseInt(current.partySize, 10) || 1) - 1)),
+                      }))}
+                    >
+                      -1
+                    </button>
+                    <input
+                      type="number"
+                      min={1}
+                      max={99}
+                      value={form.partySize}
+                      onChange={(e) => setForm({ ...form, partySize: e.target.value })}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setForm((current) => ({
+                        ...current,
+                        partySize: String(Math.min(99, (parseInt(current.partySize, 10) || 1) + 1)),
+                      }))}
+                    >
+                      +1
+                    </button>
+                  </div>
+                </label>
+                <label>
                   <span className="field-label">{t('editor.employee')}</span>
-                  <select value={form.employeeId} onChange={(e) => setForm({ ...form, employeeId: e.target.value })}>
-                    <option value="">{t('editor.pendingAssignment')}</option>
-                    {assignableEmployeeOptions.map((user) => (
-                      <option key={user.id} value={user.id}>{user.displayName}</option>
-                    ))}
-                  </select>
+                  <div className="checkbox-group" role="group" aria-label={t('editor.employee')}>
+                    {assignableEmployeeOptions.map((user) => {
+                      const checked = form.employeeIds.includes(user.id);
+                      return (
+                        <label key={user.id} className="checkbox-option">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => setForm((current) => ({
+                              ...current,
+                              employeeIds: e.target.checked
+                                ? [...current.employeeIds, user.id]
+                                : current.employeeIds.filter((id) => id !== user.id),
+                            }))}
+                          />
+                          {user.displayName}
+                        </label>
+                      );
+                    })}
+                    {pendingEmployee ? (
+                      <label className="checkbox-option">
+                        <input
+                          type="checkbox"
+                          checked={form.includePending}
+                          onChange={(e) => setForm({ ...form, includePending: e.target.checked })}
+                        />
+                        {t('editor.pendingAssignment')}
+                      </label>
+                    ) : null}
+                  </div>
+                  <span className="hint">{t('editor.includePending')}</span>
                 </label>
                 <div className="row">
                   <label>

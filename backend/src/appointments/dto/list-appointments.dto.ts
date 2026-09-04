@@ -5,6 +5,10 @@ export class ListAppointmentsDto {
   @IsOptional()
   employeeId?: string;
 
+  @IsString()
+  @IsOptional()
+  groupId?: string;
+
   @IsISO8601()
   @IsOptional()
   rangeStart?: string;

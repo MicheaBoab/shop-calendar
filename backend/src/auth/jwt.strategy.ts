@@ -10,6 +10,8 @@ type AuthTokenPayload = {
   username: string;
   role: string;
   uv: number;
+  shopId: string;
+  activeShopId?: string;
 };
 
 @Injectable()
@@ -37,6 +39,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         id: true,
         username: true,
         role: true,
+        shopId: true,
         updatedAt: true,
       },
     });
@@ -54,6 +57,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       username: user.username,
       role: user.role,
       uv: payload.uv,
+      shopId: user.shopId,
+      activeShopId: payload.activeShopId,
     };
   }
 }

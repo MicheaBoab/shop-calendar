@@ -27,8 +27,24 @@ enum AppointmentStatus {
   CANCELLED @map("cancelled")
 }
 
+model Shop {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users          User[]
+  appointments   Appointment[]
+  staffColorMaps StaffColorMap[]
+  auditLogs      AuditLog[]
+  systemSetting  SystemSetting?
+
+  @@map("shops")
+}
+
 model User {
   id                  String         @id @default(cuid())
+  shopId              String         @map("shop_id")
   username            String         @unique
   passwordHash        String         @map("password_hash")
   displayName         String         @map("display_name")
@@ -37,26 +53,32 @@ model User {
   createdAt           DateTime       @default(now()) @map("created_at")
   updatedAt           DateTime       @updatedAt @map("updated_at")
   deletedAt           DateTime?      @map("deleted_at")
+  shop                Shop           @relation(fields: [shopId], references: [id])
   employeeAppointments Appointment[] @relation("EmployeeAppointments")
   createdAppointments Appointment[]  @relation("AppointmentCreatedBy")
   updatedAppointments Appointment[]  @relation("AppointmentUpdatedBy")
   auditLogs           AuditLog[]     @relation("ActorAuditLogs")
   roleAssignments     UserRoleAssignment[]
 
+  @@index([shopId])
   @@map("users")
 }
 
 model StaffColorMap {
-  staffName String   @id @map("staff_name")
+  shopId    String   @map("shop_id")
+  staffName String   @map("staff_name")
   color     String
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+  shop      Shop     @relation(fields: [shopId], references: [id])
 
+  @@id([shopId, staffName])
   @@map("staff_color_map")
 }
 
 model Appointment {
   id                   String            @id @default(cuid())
+  shopId               String            @map("shop_id")
   employeeId           String            @map("employee_id")
   employeeDisplayName  String?           @map("employee_display_name")
   employeeColor        String?           @map("employee_color")
@@ -70,20 +92,25 @@ model Appointment {
   status               AppointmentStatus @default(SCHEDULED)
   createdById          String            @map("created_by")
   updatedById          String            @map("updated_by")
+  groupId              String?           @map("group_id")
   createdAt            DateTime          @default(now()) @map("created_at")
   updatedAt            DateTime          @updatedAt @map("updated_at")
   deletedAt            DateTime?         @map("deleted_at")
+  shop                 Shop              @relation(fields: [shopId], references: [id])
   employee             User              @relation("EmployeeAppointments", fields: [employeeId], references: [id])
   createdBy            User              @relation("AppointmentCreatedBy", fields: [createdById], references: [id])
   updatedBy            User              @relation("AppointmentUpdatedBy", fields: [updatedById], references: [id])
 
   @@index([employeeId, startAt, endAt])
   @@index([startAt, endAt])
+  @@index([groupId])
+  @@index([shopId, startAt, endAt])
   @@map("appointments")
 }
 
 model AuditLog {
   id           String   @id @default(cuid())
+  shopId       String   @map("shop_id")
   actorUserId  String   @map("actor_user_id")
   action       String
   entityType   String   @map("entity_type")
@@ -91,10 +118,12 @@ model AuditLog {
   beforePayload Json?   @map("before_payload")
   afterPayload Json?    @map("after_payload")
   createdAt    DateTime @default(now()) @map("created_at")
+  shop         Shop     @relation(fields: [shopId], references: [id])
   actor        User     @relation("ActorAuditLogs", fields: [actorUserId], references: [id])
 
   @@index([entityType, entityId])
   @@index([createdAt])
+  @@index([shopId])
   @@map("audit_logs")
 }
 
@@ -144,11 +173,12 @@ model UserRoleAssignment {
 }
 
 model SystemSetting {
-  id                  Int      @id @default(1)
+  shopId              String   @id @map("shop_id")
   calendarWindowStart String?  @map("calendar_window_start")
   calendarWindowEnd   String?  @map("calendar_window_end")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
+  shop                Shop     @relation(fields: [shopId], references: [id])
 
   @@map("system_settings")
 }

@@ -1,10 +1,16 @@
 import { AppointmentStatus, UserRole } from '@prisma/client';
+import { Type } from 'class-transformer';
 import {
+  ArrayUnique,
+  IsArray,
   IsEnum,
+  IsInt,
   IsISO8601,
   IsOptional,
   IsString,
   Matches,
+  Max,
+  Min,
 } from 'class-validator';
 
 export class UpdateAppointmentDto {
@@ -16,6 +22,20 @@ export class UpdateAppointmentDto {
   @IsOptional()
   @Matches(/\S/, { message: 'employeeId should not be empty' })
   employeeId?: string;
+
+  // Group edit: replaces the full set of real employees linked to this appointment's group.
+  @IsArray()
+  @ArrayUnique()
+  @IsString({ each: true })
+  @IsOptional()
+  employeeIds?: string[];
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  @IsOptional()
+  partySize?: number;
 
   @IsISO8601()
   @IsOptional()

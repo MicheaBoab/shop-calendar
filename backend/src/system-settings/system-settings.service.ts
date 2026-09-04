@@ -1,18 +1,20 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { SHOP_SCOPED_PRISMA } from '../common/prisma/prisma.module';
+import type { ShopScopedPrismaClient } from '../common/prisma/prisma.module';
+import { requireCurrentShopId } from '../common/shop-context/shop-context';
 import { UpdateCalendarWindowDto } from './dto/update-calendar-window.dto';
 
 const DEFAULT_SLOT_MIN_TIME = '10:00:00';
 const DEFAULT_SLOT_MAX_TIME = '23:00:00';
-const SYSTEM_SETTINGS_ID = 1;
 
 @Injectable()
 export class SystemSettingsService {
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(@Inject(SHOP_SCOPED_PRISMA) private readonly prismaService: ShopScopedPrismaClient) {}
 
   async getCalendarWindow() {
+    const shopId = requireCurrentShopId();
     const settings = await this.prismaService.systemSetting.findUnique({
-      where: { id: SYSTEM_SETTINGS_ID },
+      where: { shopId },
       select: {
         calendarWindowStart: true,
         calendarWindowEnd: true,
@@ -27,15 +29,16 @@ export class SystemSettingsService {
 
   async updateCalendarWindow(dto: UpdateCalendarWindowDto) {
     this.assertWindowRange(dto.slotMinTime, dto.slotMaxTime);
+    const shopId = requireCurrentShopId();
 
     const updated = await this.prismaService.systemSetting.upsert({
-      where: { id: SYSTEM_SETTINGS_ID },
+      where: { shopId },
       update: {
         calendarWindowStart: dto.slotMinTime,
         calendarWindowEnd: dto.slotMaxTime,
       },
       create: {
-        id: SYSTEM_SETTINGS_ID,
+        shopId,
         calendarWindowStart: dto.slotMinTime,
         calendarWindowEnd: dto.slotMaxTime,
       },
