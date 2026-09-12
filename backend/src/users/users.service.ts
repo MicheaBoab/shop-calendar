@@ -74,7 +74,7 @@ export class UsersService {
         },
       });
 
-      const resolvedColor = await this.getStaffColor(staffName);
+      const resolvedColor = await this.getStaffColor(staffName, tx);
       const existingMapping = await tx.staffColorMap.findUnique({
         where: { shopId_staffName: { shopId, staffName } },
       });
@@ -263,9 +263,12 @@ export class UsersService {
     );
   }
 
-  private async getStaffColor(staffName: string) {
+  private async getStaffColor(
+    staffName: string,
+    client: Pick<ShopScopedPrismaClient, 'staffColorMap'> = this.prismaService,
+  ) {
     const normalizedStaffName = this.normalizeStaffName(staffName);
-    const existing = await this.prismaService.staffColorMap.findUnique({
+    const existing = await client.staffColorMap.findUnique({
       where: {
         shopId_staffName: {
           shopId: requireCurrentShopId(),

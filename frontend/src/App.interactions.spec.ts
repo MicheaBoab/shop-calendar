@@ -74,6 +74,7 @@ vi.mock("@fullcalendar/react", () => {
             className: ["mock-calendar-event", ...(event.classNames ?? [])]
               .filter(Boolean)
               .join(" "),
+            "data-editable": String(event.editable ?? true),
             style: {
               background: event.backgroundColor,
               borderColor: event.borderColor,
@@ -103,7 +104,12 @@ vi.mock("@fullcalendar/react", () => {
         "button",
         {
           type: "button",
-          onClick: () => props.eventClick?.({ event: { id: "appt-1" } }),
+          onClick: () =>
+            props.eventClick?.({
+              event: {
+                id: (globalThis as any).__TEST_EVENT_CLICK_ID__ ?? "appt-1",
+              },
+            }),
         },
         "Mock event click",
       ),
@@ -158,6 +164,10 @@ const setMockCalendarNoteState = (
 ) => {
   (globalThis as any).__TEST_CALENDAR_NOTE_TRUNCATED = isTruncated;
   (globalThis as any).__TEST_CALENDAR_NOTE_TEXT = noteText;
+};
+
+const setMockEventClickId = (id: string) => {
+  (globalThis as any).__TEST_EVENT_CLICK_ID__ = id;
 };
 
 const setMobilePointerMode = (isMobilePointer: boolean) => {
@@ -392,6 +402,10 @@ const makeFetchMock = (role: TestRole, options: TestFetchOptions = {}) => {
       return ok({ success: true });
     }
 
+    if (url.includes("/appointments/appt-2") && method === "DELETE") {
+      return ok({ success: true });
+    }
+
     return ok({});
   });
 };
@@ -458,6 +472,7 @@ describe("App interaction seams", () => {
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
     document.body.innerHTML = "";
     setMockCalendarNoteState(false);
+    setMockEventClickId("appt-1");
     setMobilePointerMode(false);
   });
 
@@ -761,6 +776,62 @@ describe("App interaction seams", () => {
     expect(cancelledOverviewItem).not.toBeNull();
     expect(cancelledOverviewItem?.textContent).toContain("5551234567");
     expect(cancelledOverviewItem?.textContent).toContain("Cancelled");
+
+    await cleanupRender(root, container);
+  });
+
+  it("marks cancelled calendar events as non-editable", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
+
+    const activeCalendarEvent = container.querySelector(
+      ".mock-calendar-event.calendar-event-assigned:not(.calendar-event-cancelled)",
+    );
+    const cancelledCalendarEvent = container.querySelector(
+      ".mock-calendar-event.calendar-event-cancelled",
+    );
+
+    expect(activeCalendarEvent?.getAttribute("data-editable")).toBe("true");
+    expect(cancelledCalendarEvent?.getAttribute("data-editable")).toBe("false");
+
+    await cleanupRender(root, container);
+  });
+
+  it("disables update and cancel actions in the edit form for a cancelled appointment (employee)", async () => {
+    const { container, root } = await renderAndLogin("EMPLOYEE", 1280);
+
+    setMockEventClickId("appt-2");
+    await clickButton(container, "Mock event click");
+    await waitFor(
+      () => container.textContent?.includes("Update appointment") ?? false,
+    );
+
+    const updateButton = findButtonByLabel(container, "Update appointment");
+    const cancelActionButton = findButtonByLabel(container, "Cancel appointment");
+
+    expect(updateButton).not.toBeNull();
+    expect((updateButton as HTMLButtonElement)?.disabled).toBe(true);
+    expect(cancelActionButton).not.toBeNull();
+    expect((cancelActionButton as HTMLButtonElement)?.disabled).toBe(true);
+
+    await cleanupRender(root, container);
+  });
+
+  it("disables update but keeps admin hard delete enabled for a cancelled appointment", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
+
+    setMockEventClickId("appt-2");
+    await clickButton(container, "Mock event click");
+    await waitFor(
+      () => container.textContent?.includes("Update appointment") ?? false,
+    );
+
+    const updateButton = findButtonByLabel(container, "Update appointment");
+    const deleteButton = findButtonByLabel(container, "Delete appointment");
+
+    expect(updateButton).not.toBeNull();
+    expect((updateButton as HTMLButtonElement)?.disabled).toBe(true);
+    expect(deleteButton).not.toBeNull();
+    expect((deleteButton as HTMLButtonElement)?.disabled).toBe(false);
 
     await cleanupRender(root, container);
   });

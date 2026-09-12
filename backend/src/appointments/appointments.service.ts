@@ -268,6 +268,7 @@ export class AppointmentsService {
     }
 
     const existing = await this.getActiveAppointmentOrThrow(id);
+    this.assertNotCancelled(existing);
 
     if (existing.groupId || dto.employeeIds || dto.partySize) {
       return this.updateGroupAppointment(dto, existing, auditAction);
@@ -526,6 +527,7 @@ export class AppointmentsService {
 
   async cancelAppointment(id: string, cancelledById: string) {
     const existing = await this.getActiveAppointmentOrThrow(id);
+    this.assertNotCancelled(existing);
     const groupId = existing.groupId ?? existing.id;
     const currentMembers = await this.getActiveGroupMembers(existing);
 
@@ -671,6 +673,14 @@ export class AppointmentsService {
     }
 
     return appointment;
+  }
+
+  private assertNotCancelled(appointment: Appointment) {
+    if (appointment.status === AppointmentStatus.CANCELLED) {
+      throw new ConflictException(
+        'Cancelled appointments cannot be modified.',
+      );
+    }
   }
 
   private async assertNoTimeConflict(

@@ -1675,6 +1675,11 @@ function App() {
     return appointmentByIdMap.get(editingId) ?? null;
   }, [appointmentByIdMap, editingId]);
 
+  const isSelectedAppointmentCancelled = useMemo(
+    () => (selectedAppointmentContext ? isCancelledAppointment(selectedAppointmentContext) : false),
+    [selectedAppointmentContext],
+  );
+
   useEffect(() => {
     if (!editingId) {
       return;
@@ -1935,6 +1940,7 @@ function App() {
           textColor: isCancelled ? '#e2e8f0' : CALENDAR_EVENT_TEXT_LIGHT,
           borderWidth: '1px',
           display: 'block',
+          editable: !isCancelled,
           classNames,
           extendedProps: {
             appointmentId: appointment.id,
@@ -2383,9 +2389,9 @@ function App() {
                   <textarea value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
                 </label>
                 <div className="row">
-                  <button type="submit" disabled={loading}>{editingId ? t('actions.updateAppointment') : t('actions.createAppointment')}</button>
+                  <button type="submit" disabled={loading || isSelectedAppointmentCancelled}>{editingId ? t('actions.updateAppointment') : t('actions.createAppointment')}</button>
                   {editingId ? <button type="button" onClick={() => { setEditingId(null); setForm(createInitialForm()); }}>{t('actions.cancel')}</button> : null}
-                  {editingId ? <button type="button" className={isAdmin ? 'danger-action' : ''} disabled={loading} onClick={() => void handleDelete(editingId)}>{isAdmin ? t('actions.deleteAppointment') : t('actions.cancelAppointment')}</button> : null}
+                  {editingId ? <button type="button" className={isAdmin ? 'danger-action' : ''} disabled={loading || (!isAdmin && isSelectedAppointmentCancelled)} onClick={() => void handleDelete(editingId)}>{isAdmin ? t('actions.deleteAppointment') : t('actions.cancelAppointment')}</button> : null}
                 </div>
               </form>
             </section>

@@ -258,6 +258,77 @@ describe('AppointmentsService', () => {
     ).toBeInstanceOf(Date);
   });
 
+  it('rejects updateAppointment when the existing appointment is cancelled', async () => {
+    const existing = makeAppointment({
+      id: 'appt-cancelled',
+      status: AppointmentStatus.CANCELLED,
+    });
+    prismaService.appointment.findFirst.mockResolvedValueOnce(existing);
+
+    await expect(
+      service.updateAppointment('appt-cancelled', {
+        updatedById: 'admin-1',
+        note: 'try edit',
+      } as any),
+    ).rejects.toThrow('Cancelled appointments cannot be modified.');
+
+    expect(prismaService.appointment.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects moveAppointment when the existing appointment is cancelled', async () => {
+    const existing = makeAppointment({
+      id: 'appt-cancelled-move',
+      status: AppointmentStatus.CANCELLED,
+    });
+    prismaService.appointment.findFirst.mockResolvedValueOnce(existing);
+
+    await expect(
+      service.moveAppointment('appt-cancelled-move', {
+        startAt: futureIso(15, 0),
+        endAt: futureIso(16, 0),
+        updatedById: 'admin-1',
+      } as any),
+    ).rejects.toThrow('Cancelled appointments cannot be modified.');
+
+    expect(prismaService.appointment.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects cancelAppointment when the appointment is already cancelled', async () => {
+    const existing = makeAppointment({
+      id: 'appt-already-cancelled',
+      status: AppointmentStatus.CANCELLED,
+    });
+    prismaService.appointment.findFirst.mockResolvedValueOnce(existing);
+
+    await expect(
+      service.cancelAppointment('appt-already-cancelled', 'employee-2'),
+    ).rejects.toThrow('Cancelled appointments cannot be modified.');
+
+    expect(prismaService.appointment.update).not.toHaveBeenCalled();
+  });
+
+  it('still allows deleteAppointment (admin hard delete) on an already cancelled appointment', async () => {
+    const existing = makeAppointment({
+      id: 'appt-cancelled-delete',
+      status: AppointmentStatus.CANCELLED,
+    });
+    const deleted = makeAppointment({
+      id: 'appt-cancelled-delete',
+      status: AppointmentStatus.CANCELLED,
+      deletedAt: new Date('2026-07-28T12:00:00.000Z'),
+    });
+    prismaService.appointment.findFirst.mockResolvedValueOnce(existing);
+    prismaService.appointment.update.mockResolvedValueOnce(deleted);
+
+    const result = await service.deleteAppointment(
+      'appt-cancelled-delete',
+      'admin-1',
+    );
+
+    expect(result.success).toBe(true);
+    expect(prismaService.appointment.update).toHaveBeenCalledTimes(1);
+  });
+
   it('cancels every active appointment in the same group without soft deleting', async () => {
     const first = makeAppointment({
       id: 'appt-5',
