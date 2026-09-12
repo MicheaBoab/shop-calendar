@@ -1,4 +1,5 @@
 import { Transform } from 'class-transformer';
+import type { TransformFnParams } from 'class-transformer';
 import { UserRole } from '@prisma/client';
 import { IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
 
@@ -14,9 +15,9 @@ export class CreateUserDto {
   @IsOptional()
   displayName?: string;
 
-  @Transform(({ value }) => {
+  @Transform(({ value }: TransformFnParams) => {
     if (typeof value !== 'string') {
-      return value;
+      return value as unknown;
     }
 
     const normalized = value.trim().toUpperCase();
@@ -26,8 +27,11 @@ export class CreateUserDto {
     if (normalized === 'EMPLOYEE') {
       return UserRole.EMPLOYEE;
     }
+    if (normalized === 'MULTI_SHOP_EMPLOYEE') {
+      return UserRole.MULTI_SHOP_EMPLOYEE;
+    }
 
-    return value;
+    return value as unknown;
   })
   @IsEnum(UserRole)
   role!: UserRole;

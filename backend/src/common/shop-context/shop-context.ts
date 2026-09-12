@@ -16,7 +16,9 @@ export function getCurrentShopContext(): ShopContextStore | undefined {
 export function requireCurrentShopId(): string {
   const store = shopContextStorage.getStore();
   if (!store?.shopId) {
-    throw new Error('Shop context is not set for this request. A shop must be selected before this operation.');
+    throw new Error(
+      'Shop context is not set for this request. A shop must be selected before this operation.',
+    );
   }
   return store.shopId;
 }

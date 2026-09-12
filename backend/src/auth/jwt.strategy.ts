@@ -16,16 +16,26 @@ type AuthTokenPayload = {
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(configService: ConfigService, private readonly prismaService: PrismaService) {
+  constructor(
+    configService: ConfigService,
+    private readonly prismaService: PrismaService,
+  ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: configService.get<string>('JWT_ACCESS_SECRET', 'dev-access-secret'),
+      secretOrKey: configService.get<string>(
+        'JWT_ACCESS_SECRET',
+        'dev-access-secret',
+      ),
     });
   }
 
   async validate(payload: AuthTokenPayload) {
-    if (!payload || typeof payload.sub !== 'string' || typeof payload.uv !== 'number') {
+    if (
+      !payload ||
+      typeof payload.sub !== 'string' ||
+      typeof payload.uv !== 'number'
+    ) {
       throw new UnauthorizedException('Invalid access token');
     }
 

@@ -5,123 +5,127 @@ import type { ShopScopedPrismaClient } from '../common/prisma/prisma.module';
 import { requireCurrentShopId } from '../common/shop-context/shop-context';
 
 type AppointmentAuditChange = {
-	actorUserId: string;
-	action:
-		| 'appointment.create'
-		| 'appointment.update'
-		| 'appointment.cancel'
-		| 'appointment.delete';
-	entityId: string;
-	beforePayload: Prisma.InputJsonValue | null;
-	afterPayload: Prisma.InputJsonValue | null;
+  actorUserId: string;
+  action:
+    | 'appointment.create'
+    | 'appointment.update'
+    | 'appointment.move'
+    | 'appointment.cancel'
+    | 'appointment.delete';
+  entityId: string;
+  beforePayload: Prisma.InputJsonValue | null;
+  afterPayload: Prisma.InputJsonValue | null;
 };
 
 type UserManagementAuditChange = {
-	actorUserId: string;
-	action:
-		| 'user.create'
-		| 'user.status.update'
-		| 'user.password.update'
-		| 'user.remove';
-	entityId: string;
-	beforePayload: Prisma.InputJsonValue | null;
-	afterPayload: Prisma.InputJsonValue | null;
+  actorUserId: string;
+  action:
+    | 'user.create'
+    | 'user.status.update'
+    | 'user.password.update'
+    | 'user.remove';
+  entityId: string;
+  beforePayload: Prisma.InputJsonValue | null;
+  afterPayload: Prisma.InputJsonValue | null;
 };
 
 type ListAuditLogsQuery = {
-	page: number;
-	limit: number;
-	entityType?: 'appointment' | 'user';
+  page: number;
+  limit: number;
+  entityType?: 'appointment' | 'user';
 };
 
 @Injectable()
 export class AuditService {
-	constructor(@Inject(SHOP_SCOPED_PRISMA) private readonly prismaService: ShopScopedPrismaClient) {}
+  constructor(
+    @Inject(SHOP_SCOPED_PRISMA)
+    private readonly prismaService: ShopScopedPrismaClient,
+  ) {}
 
-	async recordAppointmentChange(change: AppointmentAuditChange) {
-		await this.createAuditLog({
-			actorUserId: change.actorUserId,
-			action: change.action,
-			entityType: 'appointment',
-			entityId: change.entityId,
-			beforePayload: change.beforePayload,
-			afterPayload: change.afterPayload,
-		});
-	}
+  async recordAppointmentChange(change: AppointmentAuditChange) {
+    await this.createAuditLog({
+      actorUserId: change.actorUserId,
+      action: change.action,
+      entityType: 'appointment',
+      entityId: change.entityId,
+      beforePayload: change.beforePayload,
+      afterPayload: change.afterPayload,
+    });
+  }
 
-	async recordUserManagementChange(change: UserManagementAuditChange) {
-		await this.createAuditLog({
-			actorUserId: change.actorUserId,
-			action: change.action,
-			entityType: 'user',
-			entityId: change.entityId,
-			beforePayload: change.beforePayload,
-			afterPayload: change.afterPayload,
-		});
-	}
+  async recordUserManagementChange(change: UserManagementAuditChange) {
+    await this.createAuditLog({
+      actorUserId: change.actorUserId,
+      action: change.action,
+      entityType: 'user',
+      entityId: change.entityId,
+      beforePayload: change.beforePayload,
+      afterPayload: change.afterPayload,
+    });
+  }
 
-	async listAuditLogs(query: ListAuditLogsQuery) {
-		const skip = (query.page - 1) * query.limit;
-		const where = {
-			shopId: requireCurrentShopId(),
-			...(query.entityType ? { entityType: query.entityType } : {}),
-		};
+  async listAuditLogs(query: ListAuditLogsQuery) {
+    const skip = (query.page - 1) * query.limit;
+    const where = {
+      shopId: requireCurrentShopId(),
+      ...(query.entityType ? { entityType: query.entityType } : {}),
+    };
 
-		const [total, items] = await this.prismaService.$transaction([
-			this.prismaService.auditLog.count({ where }),
-			this.prismaService.auditLog.findMany({
-				where,
-				skip,
-				take: query.limit,
-				orderBy: { createdAt: 'desc' },
-				include: {
-					actor: {
-						select: {
-							id: true,
-							username: true,
-							displayName: true,
-							role: true,
-						},
-					},
-				},
-			}),
-		]);
+    const [total, items] = await this.prismaService.$transaction([
+      this.prismaService.auditLog.count({ where }),
+      this.prismaService.auditLog.findMany({
+        where,
+        skip,
+        take: query.limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          actor: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              role: true,
+            },
+          },
+        },
+      }),
+    ]);
 
-		return {
-			page: query.page,
-			limit: query.limit,
-			total,
-			items: items.map((item) => ({
-				id: item.id,
-				action: item.action,
-				entityType: item.entityType,
-				entityId: item.entityId,
-				createdAt: item.createdAt,
-				beforePayload: item.beforePayload,
-				afterPayload: item.afterPayload,
-				actor: item.actor,
-			})),
-		};
-	}
+    return {
+      page: query.page,
+      limit: query.limit,
+      total,
+      items: items.map((item) => ({
+        id: item.id,
+        action: item.action,
+        entityType: item.entityType,
+        entityId: item.entityId,
+        createdAt: item.createdAt,
+        beforePayload: item.beforePayload,
+        afterPayload: item.afterPayload,
+        actor: item.actor,
+      })),
+    };
+  }
 
-	private async createAuditLog(change: {
-		actorUserId: string;
-		action: string;
-		entityType: 'appointment' | 'user';
-		entityId: string;
-		beforePayload: Prisma.InputJsonValue | null;
-		afterPayload: Prisma.InputJsonValue | null;
-	}) {
-		await this.prismaService.auditLog.create({
-			data: {
-				shopId: requireCurrentShopId(),
-				actorUserId: change.actorUserId,
-				action: change.action,
-				entityType: change.entityType,
-				entityId: change.entityId,
-				beforePayload: change.beforePayload ?? Prisma.JsonNull,
-				afterPayload: change.afterPayload ?? Prisma.JsonNull,
-			},
-		});
-	}
+  private async createAuditLog(change: {
+    actorUserId: string;
+    action: string;
+    entityType: 'appointment' | 'user';
+    entityId: string;
+    beforePayload: Prisma.InputJsonValue | null;
+    afterPayload: Prisma.InputJsonValue | null;
+  }) {
+    await this.prismaService.auditLog.create({
+      data: {
+        shopId: requireCurrentShopId(),
+        actorUserId: change.actorUserId,
+        action: change.action,
+        entityType: change.entityType,
+        entityId: change.entityId,
+        beforePayload: change.beforePayload ?? Prisma.JsonNull,
+        afterPayload: change.afterPayload ?? Prisma.JsonNull,
+      },
+    });
+  }
 }

@@ -21,7 +21,13 @@ const READ_ACTIONS = new Set([
   'groupBy',
 ]);
 
-const WRITE_WHERE_ACTIONS = new Set(['update', 'updateMany', 'delete', 'deleteMany', 'upsert']);
+const WRITE_WHERE_ACTIONS = new Set([
+  'update',
+  'updateMany',
+  'delete',
+  'deleteMany',
+  'upsert',
+]);
 
 // Backstop only: every shop-scoped service is expected to pass shopId explicitly. This extension
 // exists so that a forgotten filter fails closed (scoped to the caller's shop) instead of leaking
@@ -38,7 +44,10 @@ export function shopScopeExtension() {
 
           const shopId = requireCurrentShopId();
 
-          if (READ_ACTIONS.has(operation) || WRITE_WHERE_ACTIONS.has(operation)) {
+          if (
+            READ_ACTIONS.has(operation) ||
+            WRITE_WHERE_ACTIONS.has(operation)
+          ) {
             const typedArgs = args as { where?: Record<string, unknown> };
             typedArgs.where = { ...(typedArgs.where ?? {}), shopId };
           }
@@ -54,7 +63,9 @@ export function shopScopeExtension() {
           }
 
           if (operation === 'createMany') {
-            const typedArgs = args as { data?: Record<string, unknown> | Record<string, unknown>[] };
+            const typedArgs = args as {
+              data?: Record<string, unknown> | Record<string, unknown>[];
+            };
             const data = typedArgs.data;
             typedArgs.data = Array.isArray(data)
               ? data.map((item) => ({ ...item, shopId }))

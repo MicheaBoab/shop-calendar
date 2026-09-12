@@ -418,6 +418,19 @@ button:disabled { opacity: 0.65; cursor: not-allowed; }
   width: 4px;
   background: var(--agenda-accent);
 }
+.agenda-item-cancelled {
+  border-color: rgba(148, 163, 184, 0.5);
+  background:
+    repeating-linear-gradient(135deg, rgba(148, 163, 184, 0.12) 0 8px, transparent 8px 16px),
+    rgba(15, 23, 42, 0.72);
+  color: #cbd5e1;
+}
+.agenda-item-cancelled .agenda-time,
+.agenda-item-cancelled .agenda-meta span:not(.agenda-status-badge) {
+  color: #cbd5e1;
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
 .agenda-time {
   font-weight: 700;
   color: #e2e8f0;
@@ -434,6 +447,12 @@ button:disabled { opacity: 0.65; cursor: not-allowed; }
   padding: 2px 6px;
   border-radius: 999px;
   background: rgba(37, 99, 235, 0.18);
+}
+.agenda-meta .agenda-status-badge {
+  background: rgba(148, 163, 184, 0.22);
+  color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  text-decoration: none;
 }
 .agenda-empty {
   border: 1px dashed var(--border);
@@ -462,6 +481,21 @@ button:disabled { opacity: 0.65; cursor: not-allowed; }
 }
 .user-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .appointment-item { align-items: flex-start; border-left: 4px solid #2563eb; }
+.appointment-item-cancelled {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(148, 163, 184, 0.45);
+  background:
+    repeating-linear-gradient(135deg, rgba(148, 163, 184, 0.1) 0 8px, transparent 8px 16px),
+    rgba(15, 23, 42, 0.68);
+}
+.appointment-item-cancelled .appointment-heading strong,
+.appointment-item-cancelled .appointment-time,
+.appointment-item-cancelled .appointment-badge:not(.appointment-status-cancelled) {
+  color: #cbd5e1;
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
 .appointment-main { display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .appointment-heading { display: flex; gap: 10px; align-items: center; }
 .employee-marker { width: 12px; height: 12px; border-radius: 999px; flex-shrink: 0; }
@@ -469,6 +503,7 @@ button:disabled { opacity: 0.65; cursor: not-allowed; }
 .appointment-details { display: flex; flex-wrap: wrap; gap: 8px; }
 .appointment-badge { padding: 4px 8px; border-radius: 999px; background: rgba(37, 99, 235, 0.2); color: #bfdbfe; font-size: 0.8rem; }
 .appointment-price { background: rgba(15, 118, 110, 0.25); color: #5eead4; }
+.appointment-status-cancelled { background: rgba(148, 163, 184, 0.22); color: #e2e8f0; border: 1px solid rgba(148, 163, 184, 0.45); }
 .appointment-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .logs-toolbar {
   margin-bottom: 10px;
@@ -631,6 +666,32 @@ button:disabled { opacity: 0.65; cursor: not-allowed; }
 .fc .fc-event.calendar-event-pending-assignment {
   border-style: dashed;
   border-color: rgba(148, 163, 184, 0.95);
+}
+.fc .fc-event.calendar-event-cancelled {
+  border-color: rgba(148, 163, 184, 0.95) !important;
+  background:
+    repeating-linear-gradient(135deg, rgba(226, 232, 240, 0.18) 0 7px, transparent 7px 14px),
+    rgba(71, 85, 105, 0.78) !important;
+  color: #e2e8f0 !important;
+}
+.fc .fc-event.calendar-event-cancelled .calendar-event-time,
+.fc .fc-event.calendar-event-cancelled .calendar-event-title,
+.fc .fc-event.calendar-event-cancelled .calendar-event-note {
+  color: #e2e8f0;
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
+}
+.fc .calendar-event-status-badge {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 1px 5px;
+  border: 1px solid rgba(226, 232, 240, 0.42);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.35);
+  color: #f8fafc;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.25;
 }
 .fc .fc-event-main {
   padding: 2px 6px 3px;

@@ -12,8 +12,9 @@ datasource db {
 }
 
 enum UserRole {
-  ADMIN    @map("admin")
-  EMPLOYEE @map("employee")
+  ADMIN               @map("admin")
+  EMPLOYEE            @map("employee")
+  MULTI_SHOP_EMPLOYEE @map("multi_shop_employee")
 }
 
 enum UserStatus {
@@ -92,7 +93,7 @@ model Appointment {
   status               AppointmentStatus @default(SCHEDULED)
   createdById          String            @map("created_by")
   updatedById          String            @map("updated_by")
-  groupId              String?           @map("group_id")
+  groupId              String            @map("group_id")
   createdAt            DateTime          @default(now()) @map("created_at")
   updatedAt            DateTime          @updatedAt @map("updated_at")
   deletedAt            DateTime?         @map("deleted_at")

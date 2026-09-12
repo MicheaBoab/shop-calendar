@@ -49,29 +49,58 @@ describe('AuthService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
-    shopScopeService.assertShopExists.mockResolvedValue({ id: 'shop-b', name: 'Shop B' });
+    shopScopeService.assertShopExists.mockResolvedValue({
+      id: 'shop-b',
+      name: 'Shop B',
+    });
   });
 
   it('requires shop selection when an admin logs in', async () => {
-    prismaService.user.findFirst.mockResolvedValueOnce(makeUser({ role: UserRole.ADMIN, shopId: 'shop-a' }));
+    prismaService.user.findFirst.mockResolvedValueOnce(
+      makeUser({ role: UserRole.ADMIN, shopId: 'shop-a' }),
+    );
 
-    const result = await service.login({ username: 'admin', password: 'secret' });
+    const result = await service.login({
+      username: 'admin',
+      password: 'secret',
+    });
+
+    expect(result.needsShopSelection).toBe(true);
+    expect(result.activeShopId).toBeNull();
+  });
+
+  it('requires shop selection when a multi-shop employee logs in', async () => {
+    prismaService.user.findFirst.mockResolvedValueOnce(
+      makeUser({ role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' }),
+    );
+
+    const result = await service.login({
+      username: 'multi',
+      password: 'secret',
+    });
 
     expect(result.needsShopSelection).toBe(true);
     expect(result.activeShopId).toBeNull();
   });
 
   it('logs an employee straight into their own shop without needing selection', async () => {
-    prismaService.user.findFirst.mockResolvedValueOnce(makeUser({ role: UserRole.EMPLOYEE, shopId: 'shop-a' }));
+    prismaService.user.findFirst.mockResolvedValueOnce(
+      makeUser({ role: UserRole.EMPLOYEE, shopId: 'shop-a' }),
+    );
 
-    const result = await service.login({ username: 'alice', password: 'secret' });
+    const result = await service.login({
+      username: 'alice',
+      password: 'secret',
+    });
 
     expect(result.needsShopSelection).toBe(false);
     expect(result.activeShopId).toBe('shop-a');
   });
 
   it('allows an admin to switch to a different shop', async () => {
-    prismaService.user.findFirst.mockResolvedValueOnce(makeUser({ role: UserRole.ADMIN, shopId: 'shop-a' }));
+    prismaService.user.findFirst.mockResolvedValueOnce(
+      makeUser({ role: UserRole.ADMIN, shopId: 'shop-a' }),
+    );
 
     const result = await service.selectShop('user-1', 'shop-b');
 
@@ -83,9 +112,29 @@ describe('AuthService', () => {
     expect(result.activeShopId).toBe('shop-b');
   });
 
+  it('allows a multi-shop employee to switch to a different shop', async () => {
+    prismaService.user.findFirst.mockResolvedValueOnce(
+      makeUser({ role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' }),
+    );
+
+    const result = await service.selectShop('user-1', 'shop-b');
+
+    expect(shopScopeService.assertAccess).toHaveBeenCalledWith(
+      { role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' },
+      'shop-b',
+    );
+    expect(shopScopeService.assertShopExists).toHaveBeenCalledWith('shop-b');
+    expect(result.activeShopId).toBe('shop-b');
+  });
+
   it('allows an employee to select their own shop', async () => {
-    prismaService.user.findFirst.mockResolvedValueOnce(makeUser({ role: UserRole.EMPLOYEE, shopId: 'shop-a' }));
-    shopScopeService.assertShopExists.mockResolvedValueOnce({ id: 'shop-a', name: 'Shop A' });
+    prismaService.user.findFirst.mockResolvedValueOnce(
+      makeUser({ role: UserRole.EMPLOYEE, shopId: 'shop-a' }),
+    );
+    shopScopeService.assertShopExists.mockResolvedValueOnce({
+      id: 'shop-a',
+      name: 'Shop A',
+    });
 
     const result = await service.selectShop('user-1', 'shop-a');
 
@@ -97,12 +146,39 @@ describe('AuthService', () => {
   });
 
   it('forbids an employee from selecting a different shop', async () => {
-    prismaService.user.findFirst.mockResolvedValueOnce(makeUser({ role: UserRole.EMPLOYEE, shopId: 'shop-a' }));
+    prismaService.user.findFirst.mockResolvedValueOnce(
+      makeUser({ role: UserRole.EMPLOYEE, shopId: 'shop-a' }),
+    );
     shopScopeService.assertAccess.mockImplementationOnce(() => {
       throw new ForbiddenException('You do not have access to this shop');
     });
 
-    await expect(service.selectShop('user-1', 'shop-b')).rejects.toThrow(ForbiddenException);
+    await expect(service.selectShop('user-1', 'shop-b')).rejects.toThrow(
+      ForbiddenException,
+    );
     expect(shopScopeService.assertShopExists).not.toHaveBeenCalled();
+  });
+
+  it('keeps a multi-shop employee active shop during refresh', async () => {
+    jwtService.verifyAsync.mockResolvedValueOnce({
+      sub: 'user-1',
+      username: 'multi',
+      role: UserRole.MULTI_SHOP_EMPLOYEE,
+      uv: new Date('2026-01-01T00:00:00.000Z').getTime(),
+      shopId: 'shop-a',
+      activeShopId: 'shop-b',
+    });
+    prismaService.user.findFirst.mockResolvedValueOnce(
+      makeUser({ role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' }),
+    );
+
+    const result = await service.refresh('refresh-token');
+
+    expect(shopScopeService.assertAccess).toHaveBeenCalledWith(
+      { role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' },
+      'shop-b',
+    );
+    expect(result.needsShopSelection).toBe(false);
+    expect(result.activeShopId).toBe('shop-b');
   });
 });

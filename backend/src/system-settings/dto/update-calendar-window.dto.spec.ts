@@ -21,7 +21,9 @@ describe('UpdateCalendarWindowDto', () => {
     });
 
     const errors = await validate(dto);
-    const constraints = errors.flatMap((error) => Object.values(error.constraints ?? {}));
+    const constraints = errors.flatMap((error) =>
+      Object.values(error.constraints ?? {}),
+    );
 
     expect(constraints.length).toBeGreaterThan(0);
   });

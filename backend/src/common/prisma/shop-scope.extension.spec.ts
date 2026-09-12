@@ -7,7 +7,8 @@ import { shopContextStorage } from '../shop-context/shop-context';
 // captures the final args and short-circuits before any network/engine call is made. This lets us
 // exercise the actual Prisma extension composition mechanics without a live database.
 function buildClientWithStub() {
-  let captured: { model?: string; operation: string; args: unknown } | null = null;
+  let captured: { model?: string; operation: string; args: unknown } | null =
+    null;
 
   const stub = Prisma.defineExtension({
     name: 'stub-terminal',
@@ -21,7 +22,9 @@ function buildClientWithStub() {
     },
   });
 
-  const adapter = new PrismaPg({ connectionString: 'postgresql://user:pass@127.0.0.1:1/db' });
+  const adapter = new PrismaPg({
+    connectionString: 'postgresql://user:pass@127.0.0.1:1/db',
+  });
   const base = new PrismaClient({ adapter });
   const client = base.$extends(shopScopeExtension()).$extends(stub);
 
@@ -32,9 +35,12 @@ describe('shopScopeExtension', () => {
   it('auto-injects the current shopId into where filters for scoped models', async () => {
     const { client, getCaptured } = buildClientWithStub();
 
-    await shopContextStorage.run({ shopId: 'shop-a', userId: 'u1', role: 'ADMIN' }, async () => {
-      await client.user.findMany({ where: { role: 'ADMIN' } });
-    });
+    await shopContextStorage.run(
+      { shopId: 'shop-a', userId: 'u1', role: 'ADMIN' },
+      async () => {
+        await client.user.findMany({ where: { role: 'ADMIN' } });
+      },
+    );
 
     expect(getCaptured()).toEqual({
       model: 'User',
@@ -46,11 +52,18 @@ describe('shopScopeExtension', () => {
   it('overrides a tampered shopId in a where filter with the real context shopId', async () => {
     const { client, getCaptured } = buildClientWithStub();
 
-    await shopContextStorage.run({ shopId: 'shop-a', userId: 'u1', role: 'EMPLOYEE' }, async () => {
-      await client.appointment.findFirst({ where: { id: 'appt-1', shopId: 'attacker-shop' } });
-    });
+    await shopContextStorage.run(
+      { shopId: 'shop-a', userId: 'u1', role: 'EMPLOYEE' },
+      async () => {
+        await client.appointment.findFirst({
+          where: { id: 'appt-1', shopId: 'attacker-shop' },
+        });
+      },
+    );
 
-    expect(getCaptured()?.args).toEqual({ where: { id: 'appt-1', shopId: 'shop-a' } });
+    expect(getCaptured()?.args).toEqual({
+      where: { id: 'appt-1', shopId: 'shop-a' },
+    });
   });
 
   it('throws instead of running the query unscoped when no shop context is set', async () => {
@@ -77,24 +90,34 @@ describe('shopScopeExtension', () => {
   it('overrides a tampered shopId in create() data with the real context shopId', async () => {
     const { client, getCaptured } = buildClientWithStub();
 
-    await shopContextStorage.run({ shopId: 'shop-a', userId: 'u1', role: 'ADMIN' }, async () => {
-      await client.user.create({ data: { username: 'x', shopId: 'attacker-shop' } });
-    });
+    await shopContextStorage.run(
+      { shopId: 'shop-a', userId: 'u1', role: 'ADMIN' },
+      async () => {
+        await client.user.create({
+          data: { username: 'x', shopId: 'attacker-shop' },
+        });
+      },
+    );
 
-    expect((getCaptured()?.args as { data: { shopId: string } }).data.shopId).toBe('shop-a');
+    expect(
+      (getCaptured()?.args as { data: { shopId: string } }).data.shopId,
+    ).toBe('shop-a');
   });
 
   it('overrides a tampered shopId in createMany() data (array form) with the real context shopId', async () => {
     const { client, getCaptured } = buildClientWithStub();
 
-    await shopContextStorage.run({ shopId: 'shop-a', userId: 'u1', role: 'ADMIN' }, async () => {
-      await client.user.createMany({
-        data: [
-          { username: 'x', shopId: 'attacker-shop' },
-          { username: 'y', shopId: 'another-attacker-shop' },
-        ],
-      });
-    });
+    await shopContextStorage.run(
+      { shopId: 'shop-a', userId: 'u1', role: 'ADMIN' },
+      async () => {
+        await client.user.createMany({
+          data: [
+            { username: 'x', shopId: 'attacker-shop' },
+            { username: 'y', shopId: 'another-attacker-shop' },
+          ],
+        });
+      },
+    );
 
     const data = (getCaptured()?.args as { data: { shopId: string }[] }).data;
     expect(data.map((item) => item.shopId)).toEqual(['shop-a', 'shop-a']);
@@ -103,10 +126,17 @@ describe('shopScopeExtension', () => {
   it('overrides a tampered shopId in createMany() data (single-object form) with the real context shopId', async () => {
     const { client, getCaptured } = buildClientWithStub();
 
-    await shopContextStorage.run({ shopId: 'shop-a', userId: 'u1', role: 'ADMIN' }, async () => {
-      await client.user.createMany({ data: { username: 'x', shopId: 'attacker-shop' } as never });
-    });
+    await shopContextStorage.run(
+      { shopId: 'shop-a', userId: 'u1', role: 'ADMIN' },
+      async () => {
+        await client.user.createMany({
+          data: { username: 'x', shopId: 'attacker-shop' } as never,
+        });
+      },
+    );
 
-    expect((getCaptured()?.args as { data: { shopId: string } }).data.shopId).toBe('shop-a');
+    expect(
+      (getCaptured()?.args as { data: { shopId: string } }).data.shopId,
+    ).toBe('shop-a');
   });
 });

@@ -24,7 +24,7 @@ export class DefaultAdminSeed {
       },
     });
 
-    const adminUser = existing ?? await this.createDefaultAdmin(username);
+    const adminUser = existing ?? (await this.createDefaultAdmin(username));
     await this.ensurePendingAssignmentEmployeesForAllShops();
     return adminUser;
   }
@@ -53,7 +53,9 @@ export class DefaultAdminSeed {
   }
 
   private async ensurePendingAssignmentEmployeesForAllShops() {
-    const shops = await this.prismaService.shop.findMany({ select: { id: true } });
+    const shops = await this.prismaService.shop.findMany({
+      select: { id: true },
+    });
 
     for (const shop of shops) {
       await this.ensurePendingAssignmentEmployee(shop.id);
@@ -71,7 +73,9 @@ export class DefaultAdminSeed {
       return;
     }
 
-    const password = process.env.PENDING_EMPLOYEE_PASSWORD ?? 'pending-assignment-disabled-login';
+    const password =
+      process.env.PENDING_EMPLOYEE_PASSWORD ??
+      'pending-assignment-disabled-login';
     const passwordHash = await bcrypt.hash(password, 10);
 
     await this.prismaService.user.create({

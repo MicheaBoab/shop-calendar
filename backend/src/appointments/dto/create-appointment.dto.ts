@@ -1,6 +1,5 @@
 import { Type } from 'class-transformer';
 import {
-  ArrayUnique,
   IsArray,
   IsInt,
   IsISO8601,
@@ -20,7 +19,6 @@ export class CreateAppointmentDto {
 
   // Multi-employee group booking: when set, takes precedence over employeeId.
   @IsArray()
-  @ArrayUnique()
   @IsString({ each: true })
   @IsOptional()
   employeeIds?: string[];

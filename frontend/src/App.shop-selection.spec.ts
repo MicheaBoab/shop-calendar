@@ -40,7 +40,7 @@ class MockEventSource {
   }
 }
 
-type TestRole = 'ADMIN' | 'EMPLOYEE';
+type TestRole = 'ADMIN' | 'EMPLOYEE' | 'MULTI_SHOP_EMPLOYEE';
 
 interface ShopFixture {
   id: string;
@@ -120,9 +120,9 @@ const buildAuth = (role: TestRole, needsShopSelection: boolean, activeShopId?: s
   refreshToken: 'refresh-token',
   tokenType: 'Bearer',
   user: {
-    id: role === 'ADMIN' ? 'admin-1' : 'emp-logged-in',
-    username: role === 'ADMIN' ? 'admin' : 'employee',
-    displayName: role === 'ADMIN' ? 'Admin User' : 'Employee User',
+    id: role === 'ADMIN' ? 'admin-1' : role === 'MULTI_SHOP_EMPLOYEE' ? 'multi-logged-in' : 'emp-logged-in',
+    username: role === 'ADMIN' ? 'admin' : role === 'MULTI_SHOP_EMPLOYEE' ? 'multi' : 'employee',
+    displayName: role === 'ADMIN' ? 'Admin User' : role === 'MULTI_SHOP_EMPLOYEE' ? 'Multi Shop User' : 'Employee User',
     role,
     status: 'ACTIVE',
   },
@@ -138,8 +138,8 @@ const makeFetchMock = (options: FetchMockOptions) => {
     { id: 'emp-1', username: 'anna', displayName: 'Anna', role: 'EMPLOYEE', status: 'ACTIVE' },
     {
       id: role === 'ADMIN' ? 'admin-1' : 'emp-logged-in',
-      username: role === 'ADMIN' ? 'admin' : 'employee',
-      displayName: role === 'ADMIN' ? 'Admin User' : 'Employee User',
+      username: role === 'ADMIN' ? 'admin' : role === 'MULTI_SHOP_EMPLOYEE' ? 'multi' : 'employee',
+      displayName: role === 'ADMIN' ? 'Admin User' : role === 'MULTI_SHOP_EMPLOYEE' ? 'Multi Shop User' : 'Employee User',
       role,
       status: 'ACTIVE',
     },
@@ -223,7 +223,7 @@ const login = async (container: HTMLElement, role: TestRole) => {
     throw new Error('Login inputs not found');
   }
 
-  await setControlValue(usernameInput, role === 'ADMIN' ? 'admin' : 'employee');
+  await setControlValue(usernameInput, role === 'ADMIN' ? 'admin' : role === 'MULTI_SHOP_EMPLOYEE' ? 'multi' : 'employee');
   await setControlValue(passwordInput, 'admin123');
 
   await act(async () => {
@@ -327,6 +327,33 @@ describe('App shop selection', () => {
 
     const selectShopCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/auth/select-shop'));
     expect(selectShopCall).toBeDefined();
+    const body = JSON.parse(String(selectShopCall?.[1]?.body ?? '{}'));
+    expect(body).toEqual({ shopId: 'shop-2' });
+
+    await cleanupRender(root, container);
+  });
+
+  it('lets a multi-shop employee select a shop during sign-in', async () => {
+    const shops: ShopFixture[] = [
+      { id: 'shop-1', name: 'Main St' },
+      { id: 'shop-2', name: 'Second St' },
+    ];
+    const { fetchMock } = makeFetchMock({ role: 'MULTI_SHOP_EMPLOYEE', needsShopSelection: true, shops });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container, root } = renderApp();
+    await act(async () => {
+      root.render(React.createElement(I18nProvider, null, React.createElement(App)));
+    });
+
+    await login(container, 'MULTI_SHOP_EMPLOYEE');
+    await waitFor(() => container.textContent?.includes('Select a shop') ?? false);
+
+    await clickButton(container, 'Second St');
+    await clickButton(container, 'Continue');
+    await waitFor(() => container.textContent?.includes('Signed in as') ?? false);
+
+    const selectShopCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/auth/select-shop'));
     const body = JSON.parse(String(selectShopCall?.[1]?.body ?? '{}'));
     expect(body).toEqual({ shopId: 'shop-2' });
 

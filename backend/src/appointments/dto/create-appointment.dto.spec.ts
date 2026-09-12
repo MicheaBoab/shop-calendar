@@ -28,7 +28,9 @@ describe('CreateAppointmentDto', () => {
 
     const errors = await validate(dto);
 
-    const constraints = errors.flatMap((error) => Object.values(error.constraints ?? {}));
+    const constraints = errors.flatMap((error) =>
+      Object.values(error.constraints ?? {}),
+    );
     expect(constraints.some((msg) => msg.includes('phone'))).toBe(true);
     expect(constraints.some((msg) => msg.includes('price'))).toBe(true);
   });
@@ -43,7 +45,9 @@ describe('CreateAppointmentDto', () => {
     });
 
     const errors = await validate(dto);
-    const constraints = errors.flatMap((error) => Object.values(error.constraints ?? {}));
+    const constraints = errors.flatMap((error) =>
+      Object.values(error.constraints ?? {}),
+    );
     expect(constraints.some((msg) => msg.includes('phone'))).toBe(true);
   });
 
@@ -74,7 +78,9 @@ describe('CreateAppointmentDto', () => {
     );
 
     expect(
-      emptyMessages.some((msg) => msg.includes('employeeId should not be empty')),
+      emptyMessages.some((msg) =>
+        msg.includes('employeeId should not be empty'),
+      ),
     ).toBe(true);
     expect(
       whitespaceMessages.some((msg) =>

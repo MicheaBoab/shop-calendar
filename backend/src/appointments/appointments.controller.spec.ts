@@ -38,41 +38,67 @@ describe('AppointmentsController delete behavior', () => {
   });
 
   it('routes employee DELETE to cancel', async () => {
-    appointmentsService.cancelAppointment.mockResolvedValue({ success: true, id: 'appt-1' });
+    appointmentsService.cancelAppointment.mockResolvedValue({
+      success: true,
+      id: 'appt-1',
+    });
 
-    const result = await controller.deleteAppointment(
+    const result = await controller.deleteAppointment('appt-1', {}, {
+      user: {
+        sub: 'employee-1',
+        username: 'employee',
+        role: UserRole.EMPLOYEE,
+      },
+    } as any);
+
+    expect(appointmentsService.cancelAppointment).toHaveBeenCalledWith(
       'appt-1',
-      {},
-      {
-        user: {
-          sub: 'employee-1',
-          username: 'employee',
-          role: UserRole.EMPLOYEE,
-        },
-      } as any,
+      'employee-1',
     );
-
-    expect(appointmentsService.cancelAppointment).toHaveBeenCalledWith('appt-1', 'employee-1');
     expect(appointmentsService.deleteAppointment).not.toHaveBeenCalled();
     expect(result).toEqual({ success: true, id: 'appt-1' });
   });
 
-  it('routes admin DELETE to delete', async () => {
-    appointmentsService.deleteAppointment.mockResolvedValue({ success: true, id: 'appt-2' });
+  it('routes multi-shop employee DELETE to cancel', async () => {
+    appointmentsService.cancelAppointment.mockResolvedValue({
+      success: true,
+      id: 'appt-3',
+    });
 
-    const result = await controller.deleteAppointment(
-      'appt-2',
-      {},
-      {
-        user: {
-          sub: 'admin-1',
-          username: 'admin',
-          role: UserRole.ADMIN,
-        },
-      } as any,
+    const result = await controller.deleteAppointment('appt-3', {}, {
+      user: {
+        sub: 'multi-employee-1',
+        username: 'multi',
+        role: UserRole.MULTI_SHOP_EMPLOYEE,
+      },
+    } as any);
+
+    expect(appointmentsService.cancelAppointment).toHaveBeenCalledWith(
+      'appt-3',
+      'multi-employee-1',
     );
+    expect(appointmentsService.deleteAppointment).not.toHaveBeenCalled();
+    expect(result).toEqual({ success: true, id: 'appt-3' });
+  });
 
-    expect(appointmentsService.deleteAppointment).toHaveBeenCalledWith('appt-2', 'admin-1');
+  it('routes admin DELETE to delete', async () => {
+    appointmentsService.deleteAppointment.mockResolvedValue({
+      success: true,
+      id: 'appt-2',
+    });
+
+    const result = await controller.deleteAppointment('appt-2', {}, {
+      user: {
+        sub: 'admin-1',
+        username: 'admin',
+        role: UserRole.ADMIN,
+      },
+    } as any);
+
+    expect(appointmentsService.deleteAppointment).toHaveBeenCalledWith(
+      'appt-2',
+      'admin-1',
+    );
     expect(appointmentsService.cancelAppointment).not.toHaveBeenCalled();
     expect(result).toEqual({ success: true, id: 'appt-2' });
   });

@@ -1,0 +1,1 @@
+ALTER TYPE "UserRole" ADD VALUE 'multi_shop_employee';

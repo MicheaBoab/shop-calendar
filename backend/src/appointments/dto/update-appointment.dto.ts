@@ -1,7 +1,6 @@
 import { AppointmentStatus, UserRole } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
-  ArrayUnique,
   IsArray,
   IsEnum,
   IsInt,
@@ -25,7 +24,6 @@ export class UpdateAppointmentDto {
 
   // Group edit: replaces the full set of real employees linked to this appointment's group.
   @IsArray()
-  @ArrayUnique()
   @IsString({ each: true })
   @IsOptional()
   employeeIds?: string[];

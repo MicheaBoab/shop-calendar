@@ -47,7 +47,9 @@ describe('AppointmentsService', () => {
     staffColorMap: {
       findUnique: jest.fn(),
     },
-    $transaction: jest.fn(async (callback: (tx: unknown) => unknown) => callback(prismaService)),
+    $transaction: jest.fn(async (callback: (tx: unknown) => unknown) =>
+      callback(prismaService),
+    ),
   };
 
   const auditService = {
@@ -59,7 +61,7 @@ describe('AppointmentsService', () => {
   };
 
   const service = new AppointmentsService(
-    prismaService as any,
+    prismaService,
     auditService as any,
     appointmentsEventsService as any,
   );
@@ -68,8 +70,8 @@ describe('AppointmentsService', () => {
     jest.resetAllMocks();
     (requireCurrentShopId as jest.Mock).mockReturnValue('prosper');
     prismaService.user.findFirst.mockResolvedValue(null);
-    prismaService.$transaction.mockImplementation(async (callback: (tx: unknown) => unknown) =>
-      callback(prismaService),
+    prismaService.$transaction.mockImplementation(
+      async (callback: (tx: unknown) => unknown) => callback(prismaService),
     );
   });
 
@@ -101,7 +103,9 @@ describe('AppointmentsService', () => {
     expect(result.employeeId).toBe('emp-3');
     expect(result.phone).toBe('3125559999');
     expect(result.price).toBe('40.50');
-    expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenCalledWith('employee-1');
+    expect(
+      appointmentsEventsService.publishAppointmentsChanged,
+    ).toHaveBeenCalledWith('employee-1');
 
     expect(auditService.recordAppointmentChange).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -111,14 +115,15 @@ describe('AppointmentsService', () => {
     );
 
     const auditCall = auditService.recordAppointmentChange.mock.calls[0][0];
-    expect(auditCall.beforePayload).toEqual(
+    expect(auditCall.entityId).toBe('appt-2');
+    expect(auditCall.beforePayload.appointments[0]).toEqual(
       expect.objectContaining({
         phone: '3125551234',
         price: '25.00',
         customerName: 'Alice',
       }),
     );
-    expect(auditCall.afterPayload).toEqual(
+    expect(auditCall.afterPayload.appointments[0]).toEqual(
       expect.objectContaining({
         phone: '3125559999',
         price: '40.50',
@@ -127,61 +132,75 @@ describe('AppointmentsService', () => {
     );
   });
 
-    it('finds the latest customer details for an active phone number', async () => {
-      prismaService.appointment.findFirst.mockResolvedValue({
-        customerName: 'Alice',
-        note: 'Prefers morning appointments',
-      });
+  it('finds the latest customer details for an active phone number', async () => {
+    prismaService.appointment.findFirst.mockResolvedValue({
+      customerName: 'Alice',
+      note: 'Prefers morning appointments',
+    });
 
-      const result = await service.findCustomerByPhone('3125551234');
+    const result = await service.findCustomerByPhone('3125551234');
 
-      expect(prismaService.appointment.findFirst).toHaveBeenCalledWith({
-        where: {
-          shopId: 'prosper',
+    expect(prismaService.appointment.findFirst).toHaveBeenCalledWith({
+      where: {
+        shopId: 'prosper',
+        phone: '3125551234',
+        deletedAt: null,
+        OR: [{ customerName: { not: null } }, { note: { not: null } }],
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { customerName: true, note: true },
+    });
+    expect(result).toEqual({
+      customerName: 'Alice',
+      note: 'Prefers morning appointments',
+    });
+  });
+
+  it('isolates customer lookup by shop when the active shop context changes', async () => {
+    (requireCurrentShopId as jest.Mock).mockReturnValueOnce('shop-a');
+    prismaService.appointment.findFirst.mockResolvedValueOnce({
+      customerName: 'Alice',
+      note: null,
+    });
+
+    const resultA = await service.findCustomerByPhone('3125551234');
+
+    expect(prismaService.appointment.findFirst).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          shopId: 'shop-a',
           phone: '3125551234',
-          deletedAt: null,
-          OR: [{ customerName: { not: null } }, { note: { not: null } }],
-        },
-        orderBy: { createdAt: 'desc' },
-        select: { customerName: true, note: true },
-      });
-      expect(result).toEqual({
-        customerName: 'Alice',
-        note: 'Prefers morning appointments',
-      });
-    });
+        }),
+      }),
+    );
+    expect(resultA).toEqual({ customerName: 'Alice', note: null });
 
-    it('isolates customer lookup by shop when the active shop context changes', async () => {
-      (requireCurrentShopId as jest.Mock).mockReturnValueOnce('shop-a');
-      prismaService.appointment.findFirst.mockResolvedValueOnce({
-        customerName: 'Alice',
-        note: null,
-      });
+    // Same phone number, different shop: must not see the other shop's customer record.
+    (requireCurrentShopId as jest.Mock).mockReturnValueOnce('shop-b');
+    prismaService.appointment.findFirst.mockResolvedValueOnce(null);
 
-      const resultA = await service.findCustomerByPhone('3125551234');
+    const resultB = await service.findCustomerByPhone('3125551234');
 
-      expect(prismaService.appointment.findFirst).toHaveBeenNthCalledWith(
-        1,
-        expect.objectContaining({ where: expect.objectContaining({ shopId: 'shop-a', phone: '3125551234' }) }),
-      );
-      expect(resultA).toEqual({ customerName: 'Alice', note: null });
-
-      // Same phone number, different shop: must not see the other shop's customer record.
-      (requireCurrentShopId as jest.Mock).mockReturnValueOnce('shop-b');
-      prismaService.appointment.findFirst.mockResolvedValueOnce(null);
-
-      const resultB = await service.findCustomerByPhone('3125551234');
-
-      expect(prismaService.appointment.findFirst).toHaveBeenNthCalledWith(
-        2,
-        expect.objectContaining({ where: expect.objectContaining({ shopId: 'shop-b', phone: '3125551234' }) }),
-      );
-      expect(resultB).toEqual({ customerName: null, note: null });
-    });
+    expect(prismaService.appointment.findFirst).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: expect.objectContaining({
+          shopId: 'shop-b',
+          phone: '3125551234',
+        }),
+      }),
+    );
+    expect(resultB).toEqual({ customerName: null, note: null });
+  });
 
   it('uses cancel action for employees and delete action for admins with audit logs', async () => {
     const existing = makeAppointment({ id: 'appt-3' });
-    const cancelled = makeAppointment({ id: 'appt-3', status: AppointmentStatus.CANCELLED, updatedById: 'employee-2' });
+    const cancelled = makeAppointment({
+      id: 'appt-3',
+      status: AppointmentStatus.CANCELLED,
+      updatedById: 'employee-2',
+    });
     const deleted = makeAppointment({
       id: 'appt-4',
       status: AppointmentStatus.CANCELLED,
@@ -199,8 +218,12 @@ describe('AppointmentsService', () => {
     await service.cancelAppointment('appt-3', 'employee-2');
     await service.deleteAppointment('appt-4', 'admin-9');
 
-    expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenNthCalledWith(1, 'employee-2');
-    expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenNthCalledWith(2, 'admin-9');
+    expect(
+      appointmentsEventsService.publishAppointmentsChanged,
+    ).toHaveBeenNthCalledWith(1, 'employee-2');
+    expect(
+      appointmentsEventsService.publishAppointmentsChanged,
+    ).toHaveBeenNthCalledWith(2, 'admin-9');
 
     expect(auditService.recordAppointmentChange.mock.calls[0][0]).toEqual(
       expect.objectContaining({
@@ -221,14 +244,145 @@ describe('AppointmentsService', () => {
         updatedById: 'employee-2',
       }),
     );
-    expect(prismaService.appointment.update.mock.calls[0][0].data.deletedAt).toBeUndefined();
+    expect(
+      prismaService.appointment.update.mock.calls[0][0].data.deletedAt,
+    ).toBeUndefined();
     expect(prismaService.appointment.update.mock.calls[1][0].data).toEqual(
       expect.objectContaining({
         status: AppointmentStatus.CANCELLED,
         updatedById: 'admin-9',
       }),
     );
-    expect(prismaService.appointment.update.mock.calls[1][0].data.deletedAt).toBeInstanceOf(Date);
+    expect(
+      prismaService.appointment.update.mock.calls[1][0].data.deletedAt,
+    ).toBeInstanceOf(Date);
+  });
+
+  it('cancels every active appointment in the same group without soft deleting', async () => {
+    const first = makeAppointment({
+      id: 'appt-5',
+      groupId: 'group-cancel',
+      employeeId: 'emp-1',
+    });
+    const second = makeAppointment({
+      id: 'appt-6',
+      groupId: 'group-cancel',
+      employeeId: 'emp-2',
+    });
+    const firstCancelled = makeAppointment({
+      id: 'appt-5',
+      groupId: 'group-cancel',
+      employeeId: 'emp-1',
+      status: AppointmentStatus.CANCELLED,
+      updatedById: 'employee-2',
+    });
+    const secondCancelled = makeAppointment({
+      id: 'appt-6',
+      groupId: 'group-cancel',
+      employeeId: 'emp-2',
+      status: AppointmentStatus.CANCELLED,
+      updatedById: 'employee-2',
+    });
+
+    prismaService.appointment.findFirst.mockResolvedValueOnce(first);
+    prismaService.appointment.findMany.mockResolvedValueOnce([first, second]);
+    prismaService.appointment.update
+      .mockResolvedValueOnce(firstCancelled)
+      .mockResolvedValueOnce(secondCancelled);
+
+    const result = await service.cancelAppointment('appt-5', 'employee-2');
+
+    expect(result).toEqual({
+      success: true,
+      id: 'appt-5',
+      groupId: 'group-cancel',
+      appointmentIds: ['appt-5', 'appt-6'],
+    });
+    expect(prismaService.appointment.update).toHaveBeenCalledTimes(2);
+    expect(
+      prismaService.appointment.update.mock.calls[0][0].data.deletedAt,
+    ).toBeUndefined();
+    expect(
+      prismaService.appointment.update.mock.calls[1][0].data.deletedAt,
+    ).toBeUndefined();
+    expect(auditService.recordAppointmentChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorUserId: 'employee-2',
+        action: 'appointment.cancel',
+        entityId: 'group-cancel',
+        beforePayload: expect.objectContaining({
+          appointmentIds: ['appt-5', 'appt-6'],
+        }),
+        afterPayload: expect.objectContaining({
+          appointmentIds: ['appt-5', 'appt-6'],
+        }),
+      }),
+    );
+  });
+
+  it('soft deletes every active appointment in the same group for admin cleanup', async () => {
+    const first = makeAppointment({
+      id: 'appt-7',
+      groupId: 'group-delete',
+      employeeId: 'emp-1',
+    });
+    const second = makeAppointment({
+      id: 'appt-8',
+      groupId: 'group-delete',
+      employeeId: 'emp-2',
+    });
+    const deletedAt = new Date('2026-07-28T12:00:00.000Z');
+    const firstDeleted = makeAppointment({
+      id: 'appt-7',
+      groupId: 'group-delete',
+      employeeId: 'emp-1',
+      status: AppointmentStatus.CANCELLED,
+      updatedById: 'admin-9',
+      deletedAt,
+    });
+    const secondDeleted = makeAppointment({
+      id: 'appt-8',
+      groupId: 'group-delete',
+      employeeId: 'emp-2',
+      status: AppointmentStatus.CANCELLED,
+      updatedById: 'admin-9',
+      deletedAt,
+    });
+
+    prismaService.appointment.findFirst.mockResolvedValueOnce(first);
+    prismaService.appointment.findMany.mockResolvedValueOnce([first, second]);
+    prismaService.appointment.update
+      .mockResolvedValueOnce(firstDeleted)
+      .mockResolvedValueOnce(secondDeleted);
+
+    const result = await service.deleteAppointment('appt-7', 'admin-9');
+
+    expect(result).toEqual({
+      success: true,
+      id: 'appt-7',
+      groupId: 'group-delete',
+      appointmentIds: ['appt-7', 'appt-8'],
+    });
+    expect(prismaService.appointment.update).toHaveBeenCalledTimes(2);
+    expect(
+      prismaService.appointment.update.mock.calls[0][0].data.deletedAt,
+    ).toBeInstanceOf(Date);
+    expect(
+      prismaService.appointment.update.mock.calls[1][0].data.deletedAt,
+    ).toBeInstanceOf(Date);
+    expect(auditService.recordAppointmentChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorUserId: 'admin-9',
+        action: 'appointment.delete',
+        entityId: 'group-delete',
+        beforePayload: expect.objectContaining({
+          appointmentIds: ['appt-7', 'appt-8'],
+        }),
+        afterPayload: expect.objectContaining({
+          appointmentIds: ['appt-7', 'appt-8'],
+        }),
+      }),
+    );
   });
 
   it('allows creating appointment when overlapping cancelled appointment exists', async () => {
@@ -242,13 +396,15 @@ describe('AppointmentsService', () => {
       updatedById: 'admin-1',
     });
 
-    prismaService.appointment.findFirst.mockImplementation(async ({ where }: any) => {
-      if (where.status === AppointmentStatus.SCHEDULED) {
-        return null;
-      }
+    prismaService.appointment.findFirst.mockImplementation(
+      async ({ where }: any) => {
+        if (where.status === AppointmentStatus.SCHEDULED) {
+          return null;
+        }
 
-      return cancelled;
-    });
+        return cancelled;
+      },
+    );
     prismaService.appointment.create.mockResolvedValueOnce(created);
 
     const result = await service.createAppointment({
@@ -261,7 +417,14 @@ describe('AppointmentsService', () => {
     });
 
     expect(result.id).toBe('appt-new');
-  expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenCalledWith('admin-1');
+    expect(prismaService.appointment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ groupId: expect.any(String) }),
+      }),
+    );
+    expect(
+      appointmentsEventsService.publishAppointmentsChanged,
+    ).toHaveBeenCalledWith('admin-1');
     expect(prismaService.appointment.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -294,13 +457,17 @@ describe('AppointmentsService', () => {
     });
 
     expect(result.id).toBe('appt-minute');
-  expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenCalledWith('admin-1');
+    expect(
+      appointmentsEventsService.publishAppointmentsChanged,
+    ).toHaveBeenCalledWith('admin-1');
     expect(prismaService.appointment.findFirst).toHaveBeenCalled();
     expect(prismaService.appointment.create).toHaveBeenCalled();
   });
 
   it('rejects creating a single appointment when the employee already has an overlapping appointment', async () => {
-    prismaService.appointment.findFirst.mockResolvedValueOnce({ id: 'conflict-1' });
+    prismaService.appointment.findFirst.mockResolvedValueOnce({
+      id: 'conflict-1',
+    });
 
     await expect(
       service.createAppointment({
@@ -314,7 +481,9 @@ describe('AppointmentsService', () => {
     ).rejects.toThrow('overlaps an existing appointment');
 
     expect(prismaService.appointment.create).not.toHaveBeenCalled();
-    expect(appointmentsEventsService.publishAppointmentsChanged).not.toHaveBeenCalled();
+    expect(
+      appointmentsEventsService.publishAppointmentsChanged,
+    ).not.toHaveBeenCalled();
   });
 
   it('skips overlap checks for pending assignment employee', async () => {
@@ -342,28 +511,51 @@ describe('AppointmentsService', () => {
       .mockResolvedValueOnce({ id: 'pending-id' }) // getPendingAssignmentEmployeeId
       .mockResolvedValueOnce({ displayName: 'Alice', username: 'alice' }) // emp-1 snapshot
       .mockResolvedValueOnce({ displayName: 'Bob', username: 'bob' }) // emp-2 snapshot
-      .mockResolvedValueOnce({ displayName: 'Pending', username: 'pending_assignment' }); // pending snapshot
+      .mockResolvedValueOnce({
+        displayName: 'Pending',
+        username: 'pending_assignment',
+      }); // pending snapshot
 
     prismaService.appointment.create
-      .mockResolvedValueOnce(makeAppointment({ id: 'appt-1', employeeId: 'emp-1', groupId: 'group-1' }))
-      .mockResolvedValueOnce(makeAppointment({ id: 'appt-2', employeeId: 'emp-2', groupId: 'group-1' }))
-      .mockResolvedValueOnce(makeAppointment({ id: 'appt-3', employeeId: 'pending-id', groupId: 'group-1' }));
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-1',
+          employeeId: 'emp-1',
+          groupId: 'group-1',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-2',
+          employeeId: 'emp-2',
+          groupId: 'group-1',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-3',
+          employeeId: 'pending-id',
+          groupId: 'group-1',
+        }),
+      );
 
     const result = await service.createAppointment({
       employeeIds: ['emp-1', 'emp-2'],
       partySize: 3,
-      startAt: '2026-09-10T15:00:00.000Z',
-      endAt: '2026-09-10T16:00:00.000Z',
+      startAt: futureIso(15, 0),
+      endAt: futureIso(16, 0),
       phone: '3125551234',
       price: '25.00',
       createdById: 'admin-1',
-    } as any);
+    });
 
     expect(result.pendingCount).toBe(1);
     expect(result.appointments).toHaveLength(3);
     expect(result.groupId).toEqual(expect.any(String));
     expect(prismaService.appointment.create).toHaveBeenCalledTimes(3);
-    expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenCalledWith('admin-1');
+    expect(
+      appointmentsEventsService.publishAppointmentsChanged,
+    ).toHaveBeenCalledWith('admin-1');
   });
 
   it('rejects group creation when selected employees exceed party size', async () => {
@@ -371,8 +563,8 @@ describe('AppointmentsService', () => {
       service.createAppointment({
         employeeIds: ['emp-1', 'emp-2'],
         partySize: 1,
-        startAt: '2026-09-10T15:00:00.000Z',
-        endAt: '2026-09-10T16:00:00.000Z',
+        startAt: futureIso(15, 0),
+        endAt: futureIso(16, 0),
         phone: '3125551234',
         price: '25.00',
         createdById: 'admin-1',
@@ -380,15 +572,80 @@ describe('AppointmentsService', () => {
     ).rejects.toThrow('Selected employees cannot exceed party size');
   });
 
+  it('ignores repeated pending placeholders when creating group pending slots', async () => {
+    prismaService.user.findFirst
+      .mockResolvedValueOnce({ id: 'pending-id' })
+      .mockResolvedValue({
+        displayName: 'Pending',
+        username: 'pending_assignment',
+      });
+    prismaService.appointment.create
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-1',
+          employeeId: 'pending-id',
+          groupId: 'group-pending',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-2',
+          employeeId: 'pending-id',
+          groupId: 'group-pending',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-3',
+          employeeId: 'pending-id',
+          groupId: 'group-pending',
+        }),
+      );
+
+    const result = await service.createAppointment({
+      employeeIds: ['pending-id', 'pending-id'],
+      partySize: 3,
+      startAt: futureIso(15, 0),
+      endAt: futureIso(16, 0),
+      phone: '3125551234',
+      price: '25.00',
+      createdById: 'admin-1',
+    });
+
+    expect(result.pendingCount).toBe(3);
+    expect(result.appointments).toHaveLength(3);
+    expect(prismaService.appointment.findFirst).not.toHaveBeenCalled();
+    expect(prismaService.appointment.create).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects duplicate real employees in a group appointment', async () => {
+    prismaService.user.findFirst.mockResolvedValueOnce({ id: 'pending-id' });
+
+    await expect(
+      service.createAppointment({
+        employeeIds: ['emp-1', 'emp-1'],
+        partySize: 2,
+        startAt: futureIso(15, 0),
+        endAt: futureIso(16, 0),
+        phone: '3125551234',
+        price: '25.00',
+        createdById: 'admin-1',
+      } as any),
+    ).rejects.toThrow('Duplicate employees are not allowed');
+    expect(prismaService.appointment.create).not.toHaveBeenCalled();
+  });
+
   it('rejects group creation when an employee has a conflicting appointment', async () => {
-    prismaService.appointment.findFirst.mockResolvedValueOnce({ id: 'conflict-1' });
+    prismaService.appointment.findFirst.mockResolvedValueOnce({
+      id: 'conflict-1',
+    });
 
     await expect(
       service.createAppointment({
         employeeIds: ['emp-1'],
         partySize: 1,
-        startAt: '2026-09-10T15:00:00.000Z',
-        endAt: '2026-09-10T16:00:00.000Z',
+        startAt: futureIso(15, 0),
+        endAt: futureIso(16, 0),
         phone: '3125551234',
         price: '25.00',
         createdById: 'admin-1',
@@ -397,8 +654,16 @@ describe('AppointmentsService', () => {
   });
 
   it('updates a group by adding an employee and backfilling remaining pending slots', async () => {
-    const anchor = makeAppointment({ id: 'appt-1', employeeId: 'emp-1', groupId: 'group-1' });
-    const pendingMember = makeAppointment({ id: 'appt-2', employeeId: 'pending-id', groupId: 'group-1' });
+    const anchor = makeAppointment({
+      id: 'appt-1',
+      employeeId: 'emp-1',
+      groupId: 'group-1',
+    });
+    const pendingMember = makeAppointment({
+      id: 'appt-2',
+      employeeId: 'pending-id',
+      groupId: 'group-1',
+    });
 
     prismaService.appointment.findFirst
       .mockResolvedValueOnce(anchor) // getActiveAppointmentOrThrow
@@ -407,10 +672,19 @@ describe('AppointmentsService', () => {
     prismaService.user.findFirst
       .mockResolvedValueOnce({ id: 'pending-id' }) // getPendingAssignmentEmployeeId
       .mockResolvedValueOnce({ displayName: 'Carol', username: 'carol' }); // snapshot for new employee
-    prismaService.appointment.findMany.mockResolvedValueOnce([anchor, pendingMember]);
+    prismaService.appointment.findMany.mockResolvedValueOnce([
+      anchor,
+      pendingMember,
+    ]);
 
     prismaService.appointment.update
-      .mockResolvedValueOnce(makeAppointment({ id: 'appt-1', employeeId: 'emp-1', groupId: 'group-1' }))
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-1',
+          employeeId: 'emp-1',
+          groupId: 'group-1',
+        }),
+      )
       .mockResolvedValueOnce(
         makeAppointment({
           id: 'appt-2',
@@ -421,23 +695,196 @@ describe('AppointmentsService', () => {
         }),
       );
     prismaService.appointment.create.mockResolvedValueOnce(
-      makeAppointment({ id: 'appt-3', employeeId: 'emp-3', groupId: 'group-1' }),
+      makeAppointment({
+        id: 'appt-3',
+        employeeId: 'emp-3',
+        groupId: 'group-1',
+      }),
     );
 
     const result = await service.updateAppointment('appt-1', {
       employeeIds: ['emp-1', 'emp-3'],
       partySize: 2,
-      startAt: '2026-09-10T15:00:00.000Z',
-      endAt: '2026-09-10T16:00:00.000Z',
+      startAt: futureIso(15, 0),
+      endAt: futureIso(16, 0),
       updatedById: 'admin-1',
-    } as any);
+    });
 
     expect(result.groupId).toBe('group-1');
     expect(result.pendingCount).toBe(0);
-    expect(result.appointments.map((appointment: any) => appointment.employeeId).sort()).toEqual([
-      'emp-1',
-      'emp-3',
+    expect(
+      result.appointments
+        .map((appointment: any) => appointment.employeeId)
+        .sort(),
+    ).toEqual(['emp-1', 'emp-3']);
+    expect(
+      appointmentsEventsService.publishAppointmentsChanged,
+    ).toHaveBeenCalledWith('admin-1');
+  });
+
+  it('updates an all-pending group to a larger party size without treating pending as duplicates', async () => {
+    const firstPendingMember = makeAppointment({
+      id: 'appt-1',
+      employeeId: 'pending-id',
+      groupId: 'group-pending',
+    });
+    const secondPendingMember = makeAppointment({
+      id: 'appt-2',
+      employeeId: 'pending-id',
+      groupId: 'group-pending',
+    });
+
+    prismaService.appointment.findFirst.mockResolvedValueOnce(
+      firstPendingMember,
+    );
+    prismaService.user.findFirst
+      .mockResolvedValueOnce({ id: 'pending-id' })
+      .mockResolvedValueOnce({
+        displayName: 'Pending',
+        username: 'pending_assignment',
+      });
+    prismaService.appointment.findMany.mockResolvedValueOnce([
+      firstPendingMember,
+      secondPendingMember,
     ]);
-    expect(appointmentsEventsService.publishAppointmentsChanged).toHaveBeenCalledWith('admin-1');
+    prismaService.appointment.update
+      .mockResolvedValueOnce(firstPendingMember)
+      .mockResolvedValueOnce(secondPendingMember);
+    prismaService.appointment.create.mockResolvedValueOnce(
+      makeAppointment({
+        id: 'appt-3',
+        employeeId: 'pending-id',
+        groupId: 'group-pending',
+      }),
+    );
+
+    const result = await service.updateAppointment('appt-1', {
+      employeeIds: ['pending-id', 'pending-id'],
+      partySize: 3,
+      startAt: futureIso(15, 0),
+      endAt: futureIso(16, 0),
+      updatedById: 'admin-1',
+    });
+
+    expect(result.groupId).toBe('group-pending');
+    expect(result.pendingCount).toBe(3);
+    expect(result.appointments).toHaveLength(3);
+    expect(prismaService.appointment.update).toHaveBeenCalledTimes(2);
+    expect(prismaService.appointment.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('updates the anchored employee inside a group when employeeId is provided without employeeIds', async () => {
+    const anchor = makeAppointment({
+      id: 'appt-1',
+      employeeId: 'emp-1',
+      groupId: 'group-employee',
+    });
+    const otherMember = makeAppointment({
+      id: 'appt-2',
+      employeeId: 'emp-2',
+      groupId: 'group-employee',
+    });
+
+    prismaService.appointment.findFirst
+      .mockResolvedValueOnce(anchor)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+    prismaService.user.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ displayName: 'Carol', username: 'carol' });
+    prismaService.appointment.findMany.mockResolvedValueOnce([
+      anchor,
+      otherMember,
+    ]);
+    prismaService.appointment.update
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-2',
+          employeeId: 'emp-2',
+          groupId: 'group-employee',
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAppointment({
+          id: 'appt-1',
+          employeeId: 'emp-1',
+          groupId: 'group-employee',
+          status: AppointmentStatus.CANCELLED,
+          deletedAt: new Date('2026-07-28T12:00:00.000Z'),
+        }),
+      );
+    prismaService.appointment.create.mockResolvedValueOnce(
+      makeAppointment({
+        id: 'appt-3',
+        employeeId: 'emp-3',
+        groupId: 'group-employee',
+      }),
+    );
+
+    const result = await service.updateAppointment('appt-1', {
+      employeeId: 'emp-3',
+      startAt: futureIso(15, 0),
+      endAt: futureIso(16, 0),
+      updatedById: 'employee-1',
+    });
+
+    expect(result.groupId).toBe('group-employee');
+    expect(
+      result.appointments
+        .map((appointment: any) => appointment.employeeId)
+        .sort(),
+    ).toEqual(['emp-2', 'emp-3']);
+    expect(prismaService.appointment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'appt-1' },
+        data: expect.objectContaining({
+          status: AppointmentStatus.CANCELLED,
+          deletedAt: expect.any(Date),
+        }),
+      }),
+    );
+    expect(auditService.recordAppointmentChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorUserId: 'employee-1',
+        action: 'appointment.update',
+        entityId: 'group-employee',
+      }),
+    );
+  });
+
+  it('records drag moves with a move audit action for the whole group', async () => {
+    const anchor = makeAppointment({
+      id: 'appt-1',
+      employeeId: 'emp-1',
+      groupId: 'group-move',
+    });
+
+    prismaService.appointment.findFirst
+      .mockResolvedValueOnce(anchor)
+      .mockResolvedValueOnce(null);
+    prismaService.user.findFirst.mockResolvedValueOnce(null);
+    prismaService.appointment.findMany.mockResolvedValueOnce([anchor]);
+    prismaService.appointment.update.mockResolvedValueOnce(
+      makeAppointment({
+        id: 'appt-1',
+        employeeId: 'emp-1',
+        groupId: 'group-move',
+        updatedById: 'employee-1',
+      }),
+    );
+
+    await service.moveAppointment('appt-1', {
+      startAt: futureIso(17, 0),
+      endAt: futureIso(18, 0),
+      updatedById: 'employee-1',
+    });
+
+    expect(auditService.recordAppointmentChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorUserId: 'employee-1',
+        action: 'appointment.move',
+        entityId: 'group-move',
+      }),
+    );
   });
 });

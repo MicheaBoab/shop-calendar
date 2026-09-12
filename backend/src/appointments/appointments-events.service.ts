@@ -9,7 +9,8 @@ export interface AppointmentsChangedEvent {
 
 @Injectable()
 export class AppointmentsEventsService {
-  private readonly appointmentsChangedSubject = new Subject<AppointmentsChangedEvent>();
+  private readonly appointmentsChangedSubject =
+    new Subject<AppointmentsChangedEvent>();
 
   publishAppointmentsChanged(actorId?: string) {
     this.appointmentsChangedSubject.next({

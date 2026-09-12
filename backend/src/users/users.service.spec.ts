@@ -67,7 +67,9 @@ describe('UsersService staff color mapping', () => {
         data: expect.objectContaining({ shopId: 'prosper' }),
       }),
     );
-    expect(prismaService.user.create.mock.calls[0][0].data.shopId).not.toBe('attacker-shop');
+    expect(prismaService.user.create.mock.calls[0][0].data.shopId).not.toBe(
+      'attacker-shop',
+    );
   });
 
   it('resolves the pending-assignment employee scoped to the current shop when removing a user', async () => {
@@ -97,12 +99,18 @@ describe('UsersService staff color mapping', () => {
     await service.removeUser('emp-1', 'admin-1');
 
     const pendingLookupArgs = prismaService.user.findFirst.mock.calls[1][0];
-    expect(pendingLookupArgs.where.username).toBe(getPendingAssignmentEmployeeUsernameForShop('shop-b'));
-    expect(pendingLookupArgs.where.username).not.toBe(getPendingAssignmentEmployeeUsernameForShop('prosper'));
+    expect(pendingLookupArgs.where.username).toBe(
+      getPendingAssignmentEmployeeUsernameForShop('shop-b'),
+    );
+    expect(pendingLookupArgs.where.username).not.toBe(
+      getPendingAssignmentEmployeeUsernameForShop('prosper'),
+    );
   });
 
   it('reuses a persisted color for the same employee name', async () => {
-    prismaService.staffColorMap.findUnique.mockResolvedValue({ color: '#123456' });
+    prismaService.staffColorMap.findUnique.mockResolvedValue({
+      color: '#123456',
+    });
     prismaService.user.create.mockResolvedValue({
       id: 'user-1',
       username: 'alice',
@@ -113,12 +121,15 @@ describe('UsersService staff color mapping', () => {
       updatedAt: new Date('2024-01-01T00:00:00.000Z'),
     });
 
-    const created = await service.createUser({
-      username: 'alice',
-      password: 'password123',
-      displayName: 'Alice',
-      role: UserRole.EMPLOYEE,
-    }, 'admin-1');
+    const created = await service.createUser(
+      {
+        username: 'alice',
+        password: 'password123',
+        displayName: 'Alice',
+        role: UserRole.EMPLOYEE,
+      },
+      'admin-1',
+    );
 
     expect(created.color).toBe('#123456');
     expect(prismaService.staffColorMap.upsert).not.toHaveBeenCalled();
@@ -136,17 +147,48 @@ describe('UsersService staff color mapping', () => {
       updatedAt: new Date('2024-01-01T00:00:00.000Z'),
     });
 
-    const created = await service.createUser({
-      username: 'alice',
-      password: 'password123',
-      displayName: 'Alice',
-      role: UserRole.EMPLOYEE,
-    }, 'admin-1');
+    const created = await service.createUser(
+      {
+        username: 'alice',
+        password: 'password123',
+        displayName: 'Alice',
+        role: UserRole.EMPLOYEE,
+      },
+      'admin-1',
+    );
 
     expect(created.color).toBe('hsl(17 70% 56%)');
     expect(prismaService.staffColorMap.create).toHaveBeenCalledWith({
       data: { shopId: 'prosper', staffName: 'alice', color: 'hsl(17 70% 56%)' },
     });
+  });
+
+  it('allows admins to create multi-shop employee accounts', async () => {
+    prismaService.staffColorMap.findUnique.mockResolvedValue(null);
+    prismaService.user.create.mockResolvedValue({
+      id: 'user-3',
+      username: 'multi',
+      displayName: 'Multi',
+      role: UserRole.MULTI_SHOP_EMPLOYEE,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+    });
+
+    const created = await service.createUser(
+      {
+        username: 'multi',
+        password: 'password123',
+        displayName: 'Multi',
+        role: UserRole.MULTI_SHOP_EMPLOYEE,
+      },
+      'admin-1',
+    );
+
+    expect(prismaService.user.create.mock.calls[0][0].data.role).toBe(
+      UserRole.MULTI_SHOP_EMPLOYEE,
+    );
+    expect(created.role).toBe(UserRole.MULTI_SHOP_EMPLOYEE);
   });
 
   it('reassigns only future appointments to pending assignment and leaves historical appointments untouched', async () => {

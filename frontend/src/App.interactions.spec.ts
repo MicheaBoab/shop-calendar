@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import React, { act, useEffect, useImperativeHandle, useRef } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import App from './App';
-import { I18nProvider } from './i18n/i18n';
+import React, { act, useEffect, useImperativeHandle, useRef } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import App from "./App";
+import { I18nProvider } from "./i18n/i18n";
 
-vi.mock('@fullcalendar/react', () => {
+vi.mock("@fullcalendar/react", () => {
   const MockFullCalendar = React.forwardRef<any, any>((props, ref) => {
     const calendarRootRef = useRef<HTMLDivElement | null>(null);
 
@@ -23,23 +23,38 @@ vi.mock('@fullcalendar/react', () => {
         return undefined;
       }
 
-      const noteText = (globalThis as any).__TEST_CALENDAR_NOTE_TEXT ?? 'Color service note';
-      const isTruncated = Boolean((globalThis as any).__TEST_CALENDAR_NOTE_TRUNCATED);
+      const noteText =
+        (globalThis as any).__TEST_CALENDAR_NOTE_TEXT ?? "Color service note";
+      const isTruncated = Boolean(
+        (globalThis as any).__TEST_CALENDAR_NOTE_TRUNCATED,
+      );
 
-      const eventHost = document.createElement('div');
-      const noteElement = document.createElement('div');
-      noteElement.className = 'calendar-event-note';
+      const eventHost = document.createElement("div");
+      const noteElement = document.createElement("div");
+      noteElement.className = "calendar-event-note";
       noteElement.textContent = noteText;
 
       Object.defineProperties(noteElement, {
-        clientWidth: { configurable: true, get: () => (isTruncated ? 64 : 120) },
-        scrollWidth: { configurable: true, get: () => (isTruncated ? 140 : 120) },
-        clientHeight: { configurable: true, get: () => (isTruncated ? 20 : 40) },
-        scrollHeight: { configurable: true, get: () => (isTruncated ? 44 : 40) },
+        clientWidth: {
+          configurable: true,
+          get: () => (isTruncated ? 64 : 120),
+        },
+        scrollWidth: {
+          configurable: true,
+          get: () => (isTruncated ? 140 : 120),
+        },
+        clientHeight: {
+          configurable: true,
+          get: () => (isTruncated ? 20 : 40),
+        },
+        scrollHeight: {
+          configurable: true,
+          get: () => (isTruncated ? 44 : 40),
+        },
       });
 
       eventHost.appendChild(noteElement);
-      calendarRootRef.current.appendChild(eventHost);
+      calendarRootRef.current.prepend(eventHost);
       props.eventDidMount?.({ el: eventHost });
 
       return () => {
@@ -49,23 +64,48 @@ vi.mock('@fullcalendar/react', () => {
     }, [props.eventDidMount, props.eventWillUnmount]);
 
     return React.createElement(
-      'div',
-      { 'data-testid': 'mock-calendar', ref: calendarRootRef },
-      React.createElement(
-        'button',
-        {
-          type: 'button',
-          onClick: () => props.dateClick?.({ date: new Date(2026, 6, 30, 14, 30, 0, 0) }),
-        },
-        'Mock date click',
+      "div",
+      { "data-testid": "mock-calendar", ref: calendarRootRef },
+      ...(props.events ?? []).map((event: any) =>
+        React.createElement(
+          "div",
+          {
+            key: event.id,
+            className: ["mock-calendar-event", ...(event.classNames ?? [])]
+              .filter(Boolean)
+              .join(" "),
+            style: {
+              background: event.backgroundColor,
+              borderColor: event.borderColor,
+              color: event.textColor,
+            },
+          },
+          props.eventContent?.({
+            event: {
+              id: event.id,
+              title: event.title,
+              extendedProps: event.extendedProps ?? {},
+            },
+            timeText: "14:00 - 15:00",
+          }) ?? event.title,
+        ),
       ),
       React.createElement(
-        'button',
+        "button",
         {
-          type: 'button',
-          onClick: () => props.eventClick?.({ event: { id: 'appt-1' } }),
+          type: "button",
+          onClick: () =>
+            props.dateClick?.({ date: new Date(2026, 6, 30, 14, 30, 0, 0) }),
         },
-        'Mock event click',
+        "Mock date click",
+      ),
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          onClick: () => props.eventClick?.({ event: { id: "appt-1" } }),
+        },
+        "Mock event click",
       ),
     );
   });
@@ -87,20 +127,46 @@ class MockEventSource {
   }
 }
 
-type TestRole = 'ADMIN' | 'EMPLOYEE';
+type TestRole = "ADMIN" | "EMPLOYEE" | "MULTI_SHOP_EMPLOYEE";
 
-const setMockCalendarNoteState = (isTruncated: boolean, noteText = 'Color service note') => {
+type TestFetchOptions = {
+  users?: Array<Record<string, unknown>>;
+  appointments?: Array<Record<string, unknown>>;
+  activeShopId?: string;
+  shops?: Array<Record<string, unknown>>;
+};
+
+const testRoleName = (role: TestRole) => {
+  if (role === "ADMIN") {
+    return "admin";
+  }
+
+  return role === "MULTI_SHOP_EMPLOYEE" ? "multi" : "employee";
+};
+
+const testRoleDisplayName = (role: TestRole) => {
+  if (role === "ADMIN") {
+    return "Admin User";
+  }
+
+  return role === "MULTI_SHOP_EMPLOYEE" ? "Multi Shop User" : "Employee User";
+};
+
+const setMockCalendarNoteState = (
+  isTruncated: boolean,
+  noteText = "Color service note",
+) => {
   (globalThis as any).__TEST_CALENDAR_NOTE_TRUNCATED = isTruncated;
   (globalThis as any).__TEST_CALENDAR_NOTE_TEXT = noteText;
 };
 
 const setMobilePointerMode = (isMobilePointer: boolean) => {
-  Object.defineProperty(window, 'matchMedia', {
+  Object.defineProperty(window, "matchMedia", {
     configurable: true,
     writable: true,
     value: vi.fn().mockImplementation(() => ({
       matches: isMobilePointer,
-      media: '(hover: none), (pointer: coarse)',
+      media: "(hover: none), (pointer: coarse)",
       onchange: null,
       addListener: vi.fn(),
       removeListener: vi.fn(),
@@ -112,7 +178,7 @@ const setMobilePointerMode = (isMobilePointer: boolean) => {
 };
 
 const setViewportWidth = (width: number) => {
-  Object.defineProperty(window, 'innerWidth', {
+  Object.defineProperty(window, "innerWidth", {
     configurable: true,
     writable: true,
     value: width,
@@ -130,7 +196,7 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 2000) => {
 
   while (!predicate()) {
     if (Date.now() - started > timeoutMs) {
-      throw new Error('Timed out waiting for condition');
+      throw new Error("Timed out waiting for condition");
     }
 
     await act(async () => {
@@ -140,7 +206,11 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 2000) => {
 };
 
 const findButtonByLabel = (container: HTMLElement, label: string) => {
-  return Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === label) ?? null;
+  return (
+    Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === label,
+    ) ?? null
+  );
 };
 
 const clickButton = async (container: HTMLElement, label: string) => {
@@ -150,22 +220,22 @@ const clickButton = async (container: HTMLElement, label: string) => {
   }
 
   await act(async () => {
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 };
 
 const clickElement = async (element: HTMLElement) => {
   await act(async () => {
-    element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 };
 
 const findControlInLabel = (
   container: HTMLElement,
   labelText: string,
-  selector: 'input' | 'textarea' | 'select' = 'input',
+  selector: "input" | "textarea" | "select" = "input",
 ) => {
-  const labels = Array.from(container.querySelectorAll('label'));
+  const labels = Array.from(container.querySelectorAll("label"));
   const match = labels.find((label) => label.textContent?.includes(labelText));
   if (!match) {
     return null;
@@ -180,84 +250,145 @@ const setControlValue = async (
 ) => {
   await act(async () => {
     const prototype = Object.getPrototypeOf(control);
-    const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      prototype,
+      "value",
+    )?.set;
     if (valueSetter) {
       valueSetter.call(control, value);
     } else {
       control.value = value;
     }
-    control.dispatchEvent(new Event('input', { bubbles: true }));
-    control.dispatchEvent(new Event('change', { bubbles: true }));
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    control.dispatchEvent(new Event("change", { bubbles: true }));
   });
 };
 
-const makeFetchMock = (role: TestRole) => {
+const makeFetchMock = (role: TestRole, options: TestFetchOptions = {}) => {
   const auth = {
-    accessToken: 'access-token',
-    refreshToken: 'refresh-token',
-    tokenType: 'Bearer',
+    accessToken: "access-token",
+    refreshToken: "refresh-token",
+    tokenType: "Bearer",
     user: {
-      id: role === 'ADMIN' ? 'admin-1' : 'emp-logged-in',
-      username: role === 'ADMIN' ? 'admin' : 'employee',
-      displayName: role === 'ADMIN' ? 'Admin User' : 'Employee User',
+      id: role === "ADMIN" ? "admin-1" : role === "MULTI_SHOP_EMPLOYEE" ? "multi-logged-in" : "emp-logged-in",
+      username: testRoleName(role),
+      displayName: testRoleDisplayName(role),
       role,
-      status: 'ACTIVE',
+      status: "ACTIVE",
     },
+    activeShopId: options.activeShopId ?? "shop-1",
   };
 
-  const users = [
+  const users = options.users ?? [
     {
-      id: 'emp-1',
-      username: 'anna',
-      displayName: 'Anna',
-      role: 'EMPLOYEE',
-      status: 'ACTIVE',
+      id: "emp-1",
+      username: "anna",
+      displayName: "Anna",
+      role: "EMPLOYEE",
+      status: "ACTIVE",
     },
     {
       id: auth.user.id,
       username: auth.user.username,
       displayName: auth.user.displayName,
       role,
-      status: 'ACTIVE',
+      status: "ACTIVE",
     },
   ];
 
-  const appointments = [
+  const today = new Date();
+  const firstStart = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+    14,
+    0,
+    0,
+    0,
+  );
+  const firstEnd = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+    15,
+    0,
+    0,
+    0,
+  );
+  const cancelledStart = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+    16,
+    0,
+    0,
+    0,
+  );
+  const cancelledEnd = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+    17,
+    0,
+    0,
+    0,
+  );
+
+  const appointments = options.appointments ?? [
     {
-      id: 'appt-1',
-      employeeId: 'emp-1',
-      startAt: '2026-07-30T14:00:00.000Z',
-      endAt: '2026-07-30T15:00:00.000Z',
-      phone: '1234567890',
-      price: '80.00',
-      customerName: 'Chris',
-      note: 'Color service',
+      id: "appt-1",
+      employeeId: "emp-1",
+      startAt: firstStart.toISOString(),
+      endAt: firstEnd.toISOString(),
+      phone: "1234567890",
+      price: "80.00",
+      customerName: "Chris",
+      note: "Color service",
+      status: "ACTIVE",
+    },
+    {
+      id: "appt-2",
+      employeeId: "emp-1",
+      startAt: cancelledStart.toISOString(),
+      endAt: cancelledEnd.toISOString(),
+      phone: "5551234567",
+      price: "45.00",
+      customerName: "Morgan",
+      note: "Cancelled service",
+      status: "CANCELLED",
     },
   ];
 
-  const ok = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  const ok = (body: unknown) =>
+    Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+
+  const shops = options.shops ?? [{ id: "shop-1", name: "Main St" }];
 
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    const method = (init?.method ?? 'GET').toUpperCase();
+    const method = (init?.method ?? "GET").toUpperCase();
 
-    if (url.endsWith('/auth/login') && method === 'POST') {
+    if (url.endsWith("/auth/login") && method === "POST") {
       return ok(auth);
     }
 
-    if (url.includes('/users') && method === 'GET') {
+    if (url.includes("/users") && method === "GET") {
       return ok(users);
     }
 
-    if (url.includes('/appointments') && method === 'GET') {
+    if (url.includes("/appointments") && method === "GET") {
       return ok(appointments);
     }
 
-    if (url.includes('/system-settings/calendar-window') && method === 'GET') {
-      return ok({ slotMinTime: '08:00:00', slotMaxTime: '20:00:00' });
+    if (url.includes("/system-settings/calendar-window") && method === "GET") {
+      return ok({ slotMinTime: "08:00:00", slotMaxTime: "20:00:00" });
     }
 
-    if (url.includes('/appointments/appt-1') && method === 'DELETE') {
+    if (url.endsWith("/shops") && method === "GET") {
+      return ok(shops);
+    }
+
+    if (url.includes("/appointments/appt-1") && method === "DELETE") {
       return ok({ success: true });
     }
 
@@ -265,40 +396,50 @@ const makeFetchMock = (role: TestRole) => {
   });
 };
 
-const renderAndLogin = async (role: TestRole, viewportWidth: number) => {
+const renderAndLogin = async (
+  role: TestRole,
+  viewportWidth: number,
+  options: TestFetchOptions = {},
+) => {
   setViewportWidth(viewportWidth);
   (globalThis as any).EventSource = MockEventSource;
-  const fetchMock = makeFetchMock(role);
-  vi.stubGlobal('fetch', fetchMock);
+  const fetchMock = makeFetchMock(role, options);
+  vi.stubGlobal("fetch", fetchMock);
 
-  const container = document.createElement('div');
+  const container = document.createElement("div");
   document.body.appendChild(container);
 
   const root = createRoot(container);
   await act(async () => {
-    root.render(React.createElement(I18nProvider, null, React.createElement(App)));
+    root.render(
+      React.createElement(I18nProvider, null, React.createElement(App)),
+    );
   });
 
-  const loginForm = container.querySelector('form');
+  const loginForm = container.querySelector("form");
   if (!loginForm) {
-    throw new Error('Login form not found');
+    throw new Error("Login form not found");
   }
 
-  const loginInputs = Array.from(loginForm.querySelectorAll('input')) as HTMLInputElement[];
+  const loginInputs = Array.from(
+    loginForm.querySelectorAll("input"),
+  ) as HTMLInputElement[];
   const usernameInput = loginInputs[0] ?? null;
   const passwordInput = loginInputs[1] ?? null;
   if (!usernameInput || !passwordInput) {
-    throw new Error('Login inputs not found');
+    throw new Error("Login inputs not found");
   }
 
-  await setControlValue(usernameInput, role === 'ADMIN' ? 'admin' : 'employee');
-  await setControlValue(passwordInput, 'admin123');
+  await setControlValue(usernameInput, testRoleName(role));
+  await setControlValue(passwordInput, "admin123");
 
   await act(async () => {
-    loginForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    loginForm.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
   });
 
-  await waitFor(() => container.textContent?.includes('Signed in as') ?? false);
+  await waitFor(() => container.textContent?.includes("Signed in as") ?? false);
   await flush();
 
   return { container, root, fetchMock };
@@ -311,11 +452,11 @@ const cleanupRender = async (root: Root, container: HTMLElement) => {
   container.remove();
 };
 
-describe('App interaction seams', () => {
+describe("App interaction seams", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-    document.body.innerHTML = '';
+    document.body.innerHTML = "";
     setMockCalendarNoteState(false);
     setMobilePointerMode(false);
   });
@@ -324,203 +465,477 @@ describe('App interaction seams', () => {
     vi.unstubAllGlobals();
   });
 
-  it('shows the mobile primary calendar control label when using mobile width', async () => {
-    const { container, root } = await renderAndLogin('ADMIN', 800);
+  it("shows the mobile primary calendar control label when using mobile width", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 800);
 
-    const primaryControl = findButtonByLabel(container, '3-day');
+    const primaryControl = findButtonByLabel(container, "3-day");
     expect(primaryControl).not.toBeNull();
-    expect(primaryControl?.className).toContain('active');
+    expect(primaryControl?.className).toContain("active");
 
     await cleanupRender(root, container);
   });
 
-  it('defaults to 3-day as the primary active view on desktop width', async () => {
-    const { container, root } = await renderAndLogin('ADMIN', 1280);
+  it("defaults to 3-day as the primary active view on desktop width", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
 
-    const threeDayControl = findButtonByLabel(container, '3-day');
+    const threeDayControl = findButtonByLabel(container, "3-day");
     expect(threeDayControl).not.toBeNull();
-    expect(threeDayControl?.className).toContain('active');
+    expect(threeDayControl?.className).toContain("active");
 
     await cleanupRender(root, container);
   });
 
-  it('applies slot click autofill and exits editing mode back to create intent', async () => {
-    const { container, root } = await renderAndLogin('ADMIN', 1280);
+  it("applies slot click autofill and exits editing mode back to create intent", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
 
-    await clickButton(container, 'Mock event click');
-    await waitFor(() => container.textContent?.includes('Update appointment') ?? false);
+    await clickButton(container, "Mock event click");
+    await waitFor(
+      () => container.textContent?.includes("Update appointment") ?? false,
+    );
 
-    await clickButton(container, 'Mock date click');
-    await waitFor(() => container.textContent?.includes('Create appointment') ?? false);
+    await clickButton(container, "Mock date click");
+    await waitFor(
+      () => container.textContent?.includes("Create appointment") ?? false,
+    );
 
-    const startDateInput = container.querySelector('input[aria-label="Start date in MM/DD/YYYY format"]') as HTMLInputElement | null;
-    const startTimeInput = findControlInLabel(container, 'Start time', 'input') as HTMLInputElement | null;
+    const startDateInput = container.querySelector(
+      'input[aria-label="Start date in MM/DD/YYYY format"]',
+    ) as HTMLInputElement | null;
+    const startTimeInput = findControlInLabel(
+      container,
+      "Start time",
+      "input",
+    ) as HTMLInputElement | null;
 
-    expect(startDateInput?.value).toBe('07/30/2026');
-    expect(startTimeInput?.value).toBe('14:30');
+    expect(startDateInput?.value).toBe("07/30/2026");
+    expect(startTimeInput?.value).toBe("14:30");
 
     await cleanupRender(root, container);
   });
 
-  it('shows admin delete styling while editing an appointment', async () => {
-    const { container, root } = await renderAndLogin('ADMIN', 1280);
+  it("shows admin delete styling while editing an appointment", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
 
-    await clickButton(container, 'Mock event click');
-    await waitFor(() => container.textContent?.includes('Update appointment') ?? false);
+    await clickButton(container, "Mock event click");
+    await waitFor(
+      () => container.textContent?.includes("Update appointment") ?? false,
+    );
 
-    const deleteButton = findButtonByLabel(container, 'Delete appointment');
+    const deleteButton = findButtonByLabel(container, "Delete appointment");
     expect(deleteButton).not.toBeNull();
-    expect(deleteButton?.className).toContain('danger-action');
+    expect(deleteButton?.className).toContain("danger-action");
 
     await cleanupRender(root, container);
   });
 
-  it('renders selected appointment window in 24-hour format', async () => {
-    const { container, root } = await renderAndLogin('ADMIN', 1280);
+  it("renders selected appointment window in 24-hour format", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
 
-    await clickButton(container, 'Mock event click');
-    await waitFor(() => container.textContent?.includes('Update appointment') ?? false);
+    await clickButton(container, "Mock event click");
+    await waitFor(
+      () => container.textContent?.includes("Update appointment") ?? false,
+    );
 
     expect(container.textContent).toMatch(/\b\d{2}:\d{2} - \d{2}:\d{2}\b/);
-    expect(container.textContent).not.toContain('PM');
-    expect(container.textContent).not.toContain('AM');
+    expect(container.textContent).not.toContain("PM");
+    expect(container.textContent).not.toContain("AM");
 
     await cleanupRender(root, container);
   });
 
-  it('shows employee cancel behavior while editing without admin danger class', async () => {
-    const { container, root } = await renderAndLogin('EMPLOYEE', 1280);
+  it("shows employee cancel behavior while editing without admin danger class", async () => {
+    const { container, root } = await renderAndLogin("EMPLOYEE", 1280);
 
-    await clickButton(container, 'Mock event click');
-    await waitFor(() => container.textContent?.includes('Update appointment') ?? false);
+    await clickButton(container, "Mock event click");
+    await waitFor(
+      () => container.textContent?.includes("Update appointment") ?? false,
+    );
 
-    const cancelButton = findButtonByLabel(container, 'Cancel appointment');
+    const cancelButton = findButtonByLabel(container, "Cancel appointment");
     expect(cancelButton).not.toBeNull();
-    expect(cancelButton?.className).not.toContain('danger-action');
+    expect(cancelButton?.className).not.toContain("danger-action");
 
     await cleanupRender(root, container);
   });
 
-  it('autofills start date and time when switching mobile 3-day to Day before slot click', async () => {
-    const { container, root } = await renderAndLogin('ADMIN', 800);
+  it("shows multi-shop employees a switch-shop entry without admin-only tabs", async () => {
+    const { container, root } = await renderAndLogin("MULTI_SHOP_EMPLOYEE", 1280, {
+      activeShopId: "shop-1",
+      shops: [
+        { id: "shop-1", name: "Main St" },
+        { id: "shop-2", name: "Second St" },
+      ],
+    });
 
-    const threeDayButton = findButtonByLabel(container, '3-day');
+    await waitFor(() => container.textContent?.includes("Switch shop (Main St)") ?? false);
+
+    expect(findButtonByLabel(container, "Switch shop (Main St)")).not.toBeNull();
+    expect(findButtonByLabel(container, "Overview")).toBeNull();
+    expect(findButtonByLabel(container, "Admin")).toBeNull();
+    expect(findButtonByLabel(container, "Logs")).toBeNull();
+    expect(container.textContent).not.toContain("Admin tools");
+    expect(container.textContent).not.toContain("Audit logs");
+
+    await cleanupRender(root, container);
+  });
+
+  it("shows multi-shop employee cancel behavior while editing without admin danger class", async () => {
+    const { container, root } = await renderAndLogin("MULTI_SHOP_EMPLOYEE", 1280);
+
+    await clickButton(container, "Mock event click");
+    await waitFor(
+      () => container.textContent?.includes("Update appointment") ?? false,
+    );
+
+    const cancelButton = findButtonByLabel(container, "Cancel appointment");
+    expect(cancelButton).not.toBeNull();
+    expect(cancelButton?.className).not.toContain("danger-action");
+    expect(findButtonByLabel(container, "Delete appointment")).toBeNull();
+
+    await cleanupRender(root, container);
+  });
+
+  it("allows employees to update price and reassign the edited appointment", async () => {
+    const { container, root, fetchMock } = await renderAndLogin(
+      "EMPLOYEE",
+      1280,
+    );
+
+    await clickButton(container, "Mock event click");
+    await waitFor(
+      () => container.textContent?.includes("Update appointment") ?? false,
+    );
+
+    const priceInput = findControlInLabel(
+      container,
+      "Price",
+      "input",
+    ) as HTMLInputElement | null;
+    const startDateInput = container.querySelector(
+      'input[aria-label="Start date in MM/DD/YYYY format"]',
+    ) as HTMLInputElement | null;
+    expect(priceInput).not.toBeNull();
+    expect(startDateInput).not.toBeNull();
+    await setControlValue(priceInput as HTMLInputElement, "95.00");
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    await setControlValue(
+      startDateInput as HTMLInputElement,
+      `${String(tomorrow.getMonth() + 1).padStart(2, "0")}/${String(tomorrow.getDate()).padStart(2, "0")}/${tomorrow.getFullYear()}`,
+    );
+
+    await openEmployeeDropdown(container);
+    const employeeUserCheckbox = findEmployeeCheckbox(
+      container,
+      "Employee User",
+    );
+    expect(employeeUserCheckbox).not.toBeNull();
+    await toggleCheckbox(employeeUserCheckbox as HTMLInputElement);
+
+    await clickButton(container, "Update appointment");
+    await waitFor(() =>
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/appointments/appt-1") &&
+          init?.method === "PATCH",
+      ),
+    );
+
+    const patchCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).includes("/appointments/appt-1") &&
+        init?.method === "PATCH",
+    );
+    const payload = JSON.parse(String(patchCall?.[1]?.body ?? "{}"));
+
+    expect(payload.price).toBe("95.00");
+    expect(payload.partySize).toBe(1);
+    expect(payload.employeeIds).toEqual(["emp-logged-in"]);
+
+    await cleanupRender(root, container);
+  });
+
+  it("does not include pending placeholders in all-pending group update payloads", async () => {
+    const today = new Date();
+    const startAt = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+      14,
+      0,
+      0,
+      0,
+    );
+    const endAt = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+      15,
+      0,
+      0,
+      0,
+    );
+    const users = [
+      {
+        id: "pending-id",
+        username: "pending_assignment",
+        displayName: "Pending",
+        role: "EMPLOYEE",
+        status: "ACTIVE",
+      },
+      {
+        id: "admin-1",
+        username: "admin",
+        displayName: "Admin User",
+        role: "ADMIN",
+        status: "ACTIVE",
+      },
+    ];
+    const appointments = ["appt-1", "appt-2", "appt-3"].map((id) => ({
+      id,
+      employeeId: "pending-id",
+      groupId: "group-pending",
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+      phone: "1234567890",
+      price: "80.00",
+      customerName: "Chris",
+      note: "Color service",
+      status: "ACTIVE",
+    }));
+
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280, {
+      users,
+      appointments,
+    });
+
+    await clickButton(container, "Mock event click");
+    await waitFor(
+      () => container.textContent?.includes("Update appointment") ?? false,
+    );
+
+    await clickButton(container, "Update appointment");
+    await waitFor(() =>
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/appointments/appt-1") &&
+          init?.method === "PATCH",
+      ),
+    );
+
+    const patchCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        String(input).includes("/appointments/appt-1") &&
+        init?.method === "PATCH",
+    );
+    const payload = JSON.parse(String(patchCall?.[1]?.body ?? "{}"));
+
+    expect(payload.partySize).toBe(3);
+    expect(payload.employeeIds).toEqual([]);
+
+    await cleanupRender(root, container);
+  });
+
+  it("keeps cancelled appointments visible and marked in calendar, agenda, and overview", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
+
+    const cancelledCalendarEvent = container.querySelector(
+      ".mock-calendar-event.calendar-event-cancelled",
+    );
+    expect(cancelledCalendarEvent).not.toBeNull();
+    expect(cancelledCalendarEvent?.textContent).toContain("Morgan");
+    expect(cancelledCalendarEvent?.textContent).toContain("Cancelled");
+
+    const cancelledAgendaItem = container.querySelector(
+      ".agenda-item.agenda-item-cancelled",
+    );
+    expect(cancelledAgendaItem).not.toBeNull();
+    expect(cancelledAgendaItem?.textContent).toContain("5551234567");
+    expect(cancelledAgendaItem?.textContent).toContain("Cancelled");
+
+    await clickButton(container, "Overview");
+
+    const cancelledOverviewItem = container.querySelector(
+      ".appointment-item.appointment-item-cancelled",
+    );
+    expect(cancelledOverviewItem).not.toBeNull();
+    expect(cancelledOverviewItem?.textContent).toContain("5551234567");
+    expect(cancelledOverviewItem?.textContent).toContain("Cancelled");
+
+    await cleanupRender(root, container);
+  });
+
+  it("autofills start date and time when switching mobile 3-day to Day before slot click", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 800);
+
+    const threeDayButton = findButtonByLabel(container, "3-day");
     expect(threeDayButton).not.toBeNull();
-    expect(threeDayButton?.className).toContain('active');
+    expect(threeDayButton?.className).toContain("active");
 
-    await clickButton(container, 'Day');
-    const dayButton = findButtonByLabel(container, 'Day');
-    expect(dayButton?.className).toContain('active');
+    await clickButton(container, "Day");
+    const dayButton = findButtonByLabel(container, "Day");
+    expect(dayButton?.className).toContain("active");
 
-    await clickButton(container, 'Mock date click');
+    await clickButton(container, "Mock date click");
 
-    const startDateInput = container.querySelector('input[aria-label="Start date in MM/DD/YYYY format"]') as HTMLInputElement | null;
-    const startTimeInput = findControlInLabel(container, 'Start time', 'input') as HTMLInputElement | null;
+    const startDateInput = container.querySelector(
+      'input[aria-label="Start date in MM/DD/YYYY format"]',
+    ) as HTMLInputElement | null;
+    const startTimeInput = findControlInLabel(
+      container,
+      "Start time",
+      "input",
+    ) as HTMLInputElement | null;
 
-    await waitFor(() => (startTimeInput?.value ?? '') === '14:30');
-    expect(startDateInput?.value).toBe('07/30/2026');
-    expect(startTimeInput?.value).toBe('14:30');
+    await waitFor(() => (startTimeInput?.value ?? "") === "14:30");
+    expect(startDateInput?.value).toBe("07/30/2026");
+    expect(startTimeInput?.value).toBe("14:30");
 
     await cleanupRender(root, container);
   });
 
-  it('keeps mobile 3-day primary control available and active after Prev and Next navigation', async () => {
-    const { container, root } = await renderAndLogin('ADMIN', 800);
+  it("keeps mobile 3-day primary control available and active after Prev and Next navigation", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 800);
 
-    const initialPrimaryControl = findButtonByLabel(container, '3-day');
+    const initialPrimaryControl = findButtonByLabel(container, "3-day");
     expect(initialPrimaryControl).not.toBeNull();
-    expect(initialPrimaryControl?.className).toContain('active');
+    expect(initialPrimaryControl?.className).toContain("active");
 
-    await clickButton(container, 'Prev');
-    const afterPrevPrimaryControl = findButtonByLabel(container, '3-day');
+    await clickButton(container, "Prev");
+    const afterPrevPrimaryControl = findButtonByLabel(container, "3-day");
     expect(afterPrevPrimaryControl).not.toBeNull();
-    expect(afterPrevPrimaryControl?.className).toContain('active');
+    expect(afterPrevPrimaryControl?.className).toContain("active");
 
-    await clickButton(container, 'Next');
-    const afterNextPrimaryControl = findButtonByLabel(container, '3-day');
+    await clickButton(container, "Next");
+    const afterNextPrimaryControl = findButtonByLabel(container, "3-day");
     expect(afterNextPrimaryControl).not.toBeNull();
-    expect(afterNextPrimaryControl?.className).toContain('active');
+    expect(afterNextPrimaryControl?.className).toContain("active");
 
     await cleanupRender(root, container);
   });
 
-  it('shows mobile fixed note layer for truncated note content', async () => {
-    const longNote = 'Long mobile note details to verify fixed layer rendering and full content visibility.';
+  it("shows mobile fixed note layer for truncated note content", async () => {
+    const longNote =
+      "Long mobile note details to verify fixed layer rendering and full content visibility.";
     setMockCalendarNoteState(true, longNote);
     setMobilePointerMode(true);
-    const { container, root } = await renderAndLogin('ADMIN', 800);
+    const { container, root } = await renderAndLogin("ADMIN", 800);
 
-    const noteElement = container.querySelector('.calendar-event-note') as HTMLElement | null;
+    const noteElement = container.querySelector(
+      ".calendar-event-note",
+    ) as HTMLElement | null;
     expect(noteElement).not.toBeNull();
 
     await clickElement(noteElement as HTMLElement);
 
-    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') !== null);
-    const tooltipContent = document.querySelector('.calendar-note-tooltip-content');
+    await waitFor(
+      () => document.querySelector(".calendar-note-tooltip-layer") !== null,
+    );
+    const tooltipContent = document.querySelector(
+      ".calendar-note-tooltip-content",
+    );
     expect(tooltipContent?.textContent).toContain(longNote);
 
     await cleanupRender(root, container);
   });
 
-  it('closes mobile fixed note layer when clicking blank backdrop area', async () => {
-    setMockCalendarNoteState(true, 'Backdrop close test note');
+  it("closes mobile fixed note layer when clicking blank backdrop area", async () => {
+    setMockCalendarNoteState(true, "Backdrop close test note");
     setMobilePointerMode(true);
-    const { container, root } = await renderAndLogin('ADMIN', 800);
+    const { container, root } = await renderAndLogin("ADMIN", 800);
 
-    const noteElement = container.querySelector('.calendar-event-note') as HTMLElement | null;
+    const noteElement = container.querySelector(
+      ".calendar-event-note",
+    ) as HTMLElement | null;
     expect(noteElement).not.toBeNull();
     await clickElement(noteElement as HTMLElement);
-    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') !== null);
+    await waitFor(
+      () => document.querySelector(".calendar-note-tooltip-layer") !== null,
+    );
 
-    const backdrop = document.querySelector('.calendar-note-tooltip-backdrop') as HTMLElement | null;
+    const backdrop = document.querySelector(
+      ".calendar-note-tooltip-backdrop",
+    ) as HTMLElement | null;
     expect(backdrop).not.toBeNull();
     await clickElement(backdrop as HTMLElement);
-    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') === null);
+    await waitFor(
+      () => document.querySelector(".calendar-note-tooltip-layer") === null,
+    );
 
     await cleanupRender(root, container);
   });
 
-  it('closes mobile fixed note layer when clicking close button', async () => {
-    setMockCalendarNoteState(true, 'Button close test note');
+  it("closes mobile fixed note layer when clicking close button", async () => {
+    setMockCalendarNoteState(true, "Button close test note");
     setMobilePointerMode(true);
-    const { container, root } = await renderAndLogin('ADMIN', 800);
+    const { container, root } = await renderAndLogin("ADMIN", 800);
 
-    const noteElement = container.querySelector('.calendar-event-note') as HTMLElement | null;
+    const noteElement = container.querySelector(
+      ".calendar-event-note",
+    ) as HTMLElement | null;
     expect(noteElement).not.toBeNull();
     await clickElement(noteElement as HTMLElement);
-    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') !== null);
+    await waitFor(
+      () => document.querySelector(".calendar-note-tooltip-layer") !== null,
+    );
 
-    const closeButton = document.querySelector('.calendar-note-tooltip-close') as HTMLElement | null;
+    const closeButton = document.querySelector(
+      ".calendar-note-tooltip-close",
+    ) as HTMLElement | null;
     expect(closeButton).not.toBeNull();
     await clickElement(closeButton as HTMLElement);
-    await waitFor(() => document.querySelector('.calendar-note-tooltip-layer') === null);
+    await waitFor(
+      () => document.querySelector(".calendar-note-tooltip-layer") === null,
+    );
 
     await cleanupRender(root, container);
   });
 
-  it('does not show mobile fixed note layer when note is not truncated', async () => {
-    setMockCalendarNoteState(false, 'Short note');
+  it("does not show mobile fixed note layer when note is not truncated", async () => {
+    setMockCalendarNoteState(false, "Short note");
     setMobilePointerMode(true);
-    const { container, root } = await renderAndLogin('ADMIN', 800);
+    const { container, root } = await renderAndLogin("ADMIN", 800);
 
-    const noteElement = container.querySelector('.calendar-event-note') as HTMLElement | null;
+    const noteElement = container.querySelector(
+      ".calendar-event-note",
+    ) as HTMLElement | null;
     expect(noteElement).not.toBeNull();
     await clickElement(noteElement as HTMLElement);
 
     await flush();
-    expect(document.querySelector('.calendar-note-tooltip-layer')).toBeNull();
+    expect(document.querySelector(".calendar-note-tooltip-layer")).toBeNull();
 
     await cleanupRender(root, container);
   });
 
-  it('preserves non-time fields when clicking a slot while already in create mode', async () => {
-    const { container, root } = await renderAndLogin('ADMIN', 1280);
+  it("preserves non-time fields when clicking a slot while already in create mode", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
 
-    const durationInput = findControlInLabel(container, 'Duration (minutes)', 'input') as HTMLInputElement | null;
-    const phoneInput = findControlInLabel(container, 'Phone', 'input') as HTMLInputElement | null;
-    const priceInput = findControlInLabel(container, 'Price', 'input') as HTMLInputElement | null;
-    const customerInput = findControlInLabel(container, 'Customer name', 'input') as HTMLInputElement | null;
-    const noteInput = findControlInLabel(container, 'Note', 'textarea') as HTMLTextAreaElement | null;
+    const durationInput = findControlInLabel(
+      container,
+      "Duration (minutes)",
+      "input",
+    ) as HTMLInputElement | null;
+    const phoneInput = findControlInLabel(
+      container,
+      "Phone",
+      "input",
+    ) as HTMLInputElement | null;
+    const priceInput = findControlInLabel(
+      container,
+      "Price",
+      "input",
+    ) as HTMLInputElement | null;
+    const customerInput = findControlInLabel(
+      container,
+      "Customer name",
+      "input",
+    ) as HTMLInputElement | null;
+    const noteInput = findControlInLabel(
+      container,
+      "Note",
+      "textarea",
+    ) as HTMLTextAreaElement | null;
 
     expect(durationInput).not.toBeNull();
     expect(phoneInput).not.toBeNull();
@@ -528,69 +943,139 @@ describe('App interaction seams', () => {
     expect(customerInput).not.toBeNull();
     expect(noteInput).not.toBeNull();
 
-    await clickButton(container, '90');
-    await waitFor(() => (durationInput as HTMLInputElement).value === '90');
-    await setControlValue(phoneInput as HTMLInputElement, '5551234567');
-    await setControlValue(priceInput as HTMLInputElement, '125.5');
-    await setControlValue(customerInput as HTMLInputElement, 'Taylor');
-    await setControlValue(noteInput as HTMLTextAreaElement, 'Please call on arrival');
+    await clickButton(container, "90");
+    await waitFor(() => (durationInput as HTMLInputElement).value === "90");
+    await setControlValue(phoneInput as HTMLInputElement, "5551234567");
+    await setControlValue(priceInput as HTMLInputElement, "125.5");
+    await setControlValue(customerInput as HTMLInputElement, "Taylor");
+    await setControlValue(
+      noteInput as HTMLTextAreaElement,
+      "Please call on arrival",
+    );
 
-    await clickButton(container, 'Mock date click');
+    await clickButton(container, "Mock date click");
 
-    const startDateInput = container.querySelector('input[aria-label="Start date in MM/DD/YYYY format"]') as HTMLInputElement | null;
-    const startTimeInput = findControlInLabel(container, 'Start time', 'input') as HTMLInputElement | null;
+    const startDateInput = container.querySelector(
+      'input[aria-label="Start date in MM/DD/YYYY format"]',
+    ) as HTMLInputElement | null;
+    const startTimeInput = findControlInLabel(
+      container,
+      "Start time",
+      "input",
+    ) as HTMLInputElement | null;
 
-    await waitFor(() => (startTimeInput?.value ?? '') === '14:30');
+    await waitFor(() => (startTimeInput?.value ?? "") === "14:30");
 
-    expect(startDateInput?.value).toBe('07/30/2026');
-    expect(startTimeInput?.value).toBe('14:30');
-    expect((durationInput as HTMLInputElement).value).toBe('90');
-    expect((phoneInput as HTMLInputElement).value).toBe('(555)123-4567');
-    expect((priceInput as HTMLInputElement).value).toBe('125.5');
-    expect((customerInput as HTMLInputElement).value).toBe('Taylor');
-    expect((noteInput as HTMLTextAreaElement).value).toBe('Please call on arrival');
-    expect(container.textContent?.includes('Create appointment')).toBe(true);
+    expect(startDateInput?.value).toBe("07/30/2026");
+    expect(startTimeInput?.value).toBe("14:30");
+    expect((durationInput as HTMLInputElement).value).toBe("90");
+    expect((phoneInput as HTMLInputElement).value).toBe("(555)123-4567");
+    expect((priceInput as HTMLInputElement).value).toBe("125.5");
+    expect((customerInput as HTMLInputElement).value).toBe("Taylor");
+    expect((noteInput as HTMLTextAreaElement).value).toBe(
+      "Please call on arrival",
+    );
+    expect(container.textContent?.includes("Create appointment")).toBe(true);
 
     await cleanupRender(root, container);
   });
 
-  it('keeps display name read-only and synced to username in admin create user form', async () => {
-    const { container, root, fetchMock } = await renderAndLogin('ADMIN', 1280);
+  it("keeps display name read-only and synced to username in admin create user form", async () => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
 
-    await clickButton(container, 'Admin');
+    await clickButton(container, "Admin");
 
-    const usernameInput = findControlInLabel(container, 'Username', 'input') as HTMLInputElement | null;
-    const displayNameInput = findControlInLabel(container, 'Display name', 'input') as HTMLInputElement | null;
-    const passwordInput = findControlInLabel(container, 'Password', 'input') as HTMLInputElement | null;
-    const confirmPasswordInput = findControlInLabel(container, 'Confirm password', 'input') as HTMLInputElement | null;
+    const usernameInput = findControlInLabel(
+      container,
+      "Username",
+      "input",
+    ) as HTMLInputElement | null;
+    const displayNameInput = findControlInLabel(
+      container,
+      "Display name",
+      "input",
+    ) as HTMLInputElement | null;
+    const passwordInput = findControlInLabel(
+      container,
+      "Password",
+      "input",
+    ) as HTMLInputElement | null;
+    const confirmPasswordInput = findControlInLabel(
+      container,
+      "Confirm password",
+      "input",
+    ) as HTMLInputElement | null;
 
     expect(usernameInput).not.toBeNull();
     expect(displayNameInput).not.toBeNull();
     expect(passwordInput).not.toBeNull();
     expect(confirmPasswordInput).not.toBeNull();
 
-    await setControlValue(usernameInput as HTMLInputElement, 'new.employee');
+    await setControlValue(usernameInput as HTMLInputElement, "new.employee");
     expect((displayNameInput as HTMLInputElement).readOnly).toBe(true);
-    expect((displayNameInput as HTMLInputElement).value).toBe('new.employee');
+    expect((displayNameInput as HTMLInputElement).value).toBe("new.employee");
 
-    await setControlValue(passwordInput as HTMLInputElement, 'secret123');
-    await setControlValue(confirmPasswordInput as HTMLInputElement, 'secret123');
-    await clickButton(container, 'Create user');
+    await setControlValue(passwordInput as HTMLInputElement, "secret123");
+    await setControlValue(
+      confirmPasswordInput as HTMLInputElement,
+      "secret123",
+    );
+    await clickButton(container, "Create user");
 
     const createUserCall = fetchMock.mock.calls.find((call) => {
       const url = String(call[0]);
-      const method = ((call[1] as RequestInit | undefined)?.method ?? 'GET').toUpperCase();
-      return url.includes('/users') && method === 'POST';
+      const method = (
+        (call[1] as RequestInit | undefined)?.method ?? "GET"
+      ).toUpperCase();
+      return url.includes("/users") && method === "POST";
     });
 
     expect(createUserCall).toBeDefined();
 
-    const payload = JSON.parse(String((createUserCall?.[1] as RequestInit | undefined)?.body ?? '{}')) as {
+    const payload = JSON.parse(
+      String((createUserCall?.[1] as RequestInit | undefined)?.body ?? "{}"),
+    ) as {
       username?: string;
       displayName?: string;
+      role?: string;
     };
-    expect(payload.username).toBe('new.employee');
-    expect(payload.displayName).toBe('new.employee');
+    expect(payload.username).toBe("new.employee");
+    expect(payload.displayName).toBe("new.employee");
+    expect(payload.role).toBe("EMPLOYEE");
+
+    const roleSelect = findControlInLabel(
+      container,
+      "Role",
+      "select",
+    ) as HTMLSelectElement | null;
+    expect(roleSelect).not.toBeNull();
+    expect(Array.from(roleSelect?.options ?? []).map((option) => option.value)).toEqual([
+      "EMPLOYEE",
+      "MULTI_SHOP_EMPLOYEE",
+    ]);
+
+    await cleanupRender(root, container);
+  });
+
+  it("lets admins choose multi-shop employee when creating a user", async () => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
+
+    await clickButton(container, "Admin");
+
+    await setControlValue(findControlInLabel(container, "Username", "input") as HTMLInputElement, "multi.employee");
+    await setControlValue(findControlInLabel(container, "Password", "input") as HTMLInputElement, "secret123");
+    await setControlValue(findControlInLabel(container, "Confirm password", "input") as HTMLInputElement, "secret123");
+    await setControlValue(findControlInLabel(container, "Role", "select") as HTMLSelectElement, "MULTI_SHOP_EMPLOYEE");
+    await clickButton(container, "Create user");
+
+    const createUserCall = fetchMock.mock.calls.find((call) => {
+      const url = String(call[0]);
+      const method = ((call[1] as RequestInit | undefined)?.method ?? "GET").toUpperCase();
+      return url.includes("/users") && method === "POST";
+    });
+    const payload = JSON.parse(String((createUserCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+
+    expect(payload.role).toBe("MULTI_SHOP_EMPLOYEE");
 
     await cleanupRender(root, container);
   });
@@ -598,45 +1083,70 @@ describe('App interaction seams', () => {
 
 const makeEmployeeSelectionFetchMock = () => {
   const auth = {
-    accessToken: 'access-token',
-    refreshToken: 'refresh-token',
-    tokenType: 'Bearer',
+    accessToken: "access-token",
+    refreshToken: "refresh-token",
+    tokenType: "Bearer",
     user: {
-      id: 'admin-1',
-      username: 'admin',
-      displayName: 'Admin User',
-      role: 'ADMIN',
-      status: 'ACTIVE',
+      id: "admin-1",
+      username: "admin",
+      displayName: "Admin User",
+      role: "ADMIN",
+      status: "ACTIVE",
     },
   };
 
   const users = [
-    { id: 'admin-1', username: 'admin', displayName: 'Admin User', role: 'ADMIN', status: 'ACTIVE' },
-    { id: 'emp-1', username: 'anna', displayName: 'Anna', role: 'EMPLOYEE', status: 'ACTIVE' },
-    { id: 'emp-2', username: 'ben', displayName: 'Ben', role: 'EMPLOYEE', status: 'ACTIVE' },
-    { id: 'emp-3', username: 'cara', displayName: 'Cara', role: 'EMPLOYEE', status: 'ACTIVE' },
+    {
+      id: "admin-1",
+      username: "admin",
+      displayName: "Admin User",
+      role: "ADMIN",
+      status: "ACTIVE",
+    },
+    {
+      id: "emp-1",
+      username: "anna",
+      displayName: "Anna",
+      role: "EMPLOYEE",
+      status: "ACTIVE",
+    },
+    {
+      id: "emp-2",
+      username: "ben",
+      displayName: "Ben",
+      role: "EMPLOYEE",
+      status: "ACTIVE",
+    },
+    {
+      id: "emp-3",
+      username: "cara",
+      displayName: "Cara",
+      role: "EMPLOYEE",
+      status: "ACTIVE",
+    },
   ];
 
-  const ok = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  const ok = (body: unknown) =>
+    Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
 
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    const method = (init?.method ?? 'GET').toUpperCase();
+    const method = (init?.method ?? "GET").toUpperCase();
 
-    if (url.endsWith('/auth/login') && method === 'POST') {
+    if (url.endsWith("/auth/login") && method === "POST") {
       return ok(auth);
     }
 
-    if (url.includes('/users') && method === 'GET') {
+    if (url.includes("/users") && method === "GET") {
       return ok(users);
     }
 
-    if (url.includes('/appointments') && method === 'GET') {
+    if (url.includes("/appointments") && method === "GET") {
       return ok([]);
     }
 
-    if (url.includes('/system-settings/calendar-window') && method === 'GET') {
-      return ok({ slotMinTime: '08:00:00', slotMaxTime: '20:00:00' });
+    if (url.includes("/system-settings/calendar-window") && method === "GET") {
+      return ok({ slotMinTime: "08:00:00", slotMaxTime: "20:00:00" });
     }
 
     return ok({});
@@ -647,47 +1157,60 @@ const renderAndLoginForEmployeeSelection = async () => {
   setViewportWidth(1280);
   (globalThis as any).EventSource = MockEventSource;
   const fetchMock = makeEmployeeSelectionFetchMock();
-  vi.stubGlobal('fetch', fetchMock);
+  vi.stubGlobal("fetch", fetchMock);
 
-  const container = document.createElement('div');
+  const container = document.createElement("div");
   document.body.appendChild(container);
 
   const root = createRoot(container);
   await act(async () => {
-    root.render(React.createElement(I18nProvider, null, React.createElement(App)));
+    root.render(
+      React.createElement(I18nProvider, null, React.createElement(App)),
+    );
   });
 
-  const loginForm = container.querySelector('form');
+  const loginForm = container.querySelector("form");
   if (!loginForm) {
-    throw new Error('Login form not found');
+    throw new Error("Login form not found");
   }
 
-  const loginInputs = Array.from(loginForm.querySelectorAll('input')) as HTMLInputElement[];
-  await setControlValue(loginInputs[0], 'admin');
-  await setControlValue(loginInputs[1], 'admin123');
+  const loginInputs = Array.from(
+    loginForm.querySelectorAll("input"),
+  ) as HTMLInputElement[];
+  await setControlValue(loginInputs[0], "admin");
+  await setControlValue(loginInputs[1], "admin123");
 
   await act(async () => {
-    loginForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    loginForm.dispatchEvent(
+      new Event("submit", { bubbles: true, cancelable: true }),
+    );
   });
 
-  await waitFor(() => container.textContent?.includes('Signed in as') ?? false);
+  await waitFor(() => container.textContent?.includes("Signed in as") ?? false);
   await flush();
 
   return { container, root };
 };
 
 const openEmployeeDropdown = async (container: HTMLElement) => {
-  const toggle = container.querySelector('.employee-dropdown-toggle') as HTMLButtonElement | null;
+  const toggle = container.querySelector(
+    ".employee-dropdown-toggle",
+  ) as HTMLButtonElement | null;
   if (!toggle) {
-    throw new Error('Employee dropdown toggle not found');
+    throw new Error("Employee dropdown toggle not found");
   }
   await clickElement(toggle);
 };
 
 const findEmployeeCheckbox = (container: HTMLElement, displayName: string) => {
-  const options = Array.from(container.querySelectorAll('.employee-dropdown-panel .checkbox-option'));
-  const match = options.find((option) => option.textContent?.trim() === displayName);
-  return (match?.querySelector('input[type="checkbox"]') ?? null) as HTMLInputElement | null;
+  const options = Array.from(
+    container.querySelectorAll(".employee-dropdown-panel .checkbox-option"),
+  );
+  const match = options.find(
+    (option) => option.textContent?.trim() === displayName,
+  );
+  return (match?.querySelector('input[type="checkbox"]') ??
+    null) as HTMLInputElement | null;
 };
 
 const toggleCheckbox = async (checkbox: HTMLInputElement) => {
@@ -696,11 +1219,11 @@ const toggleCheckbox = async (checkbox: HTMLInputElement) => {
   });
 };
 
-describe('App employee selection checkbox behavior', () => {
+describe("App employee selection checkbox behavior", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-    document.body.innerHTML = '';
+    document.body.innerHTML = "";
     setMockCalendarNoteState(false);
     setMobilePointerMode(false);
   });
@@ -709,15 +1232,19 @@ describe('App employee selection checkbox behavior', () => {
     vi.unstubAllGlobals();
   });
 
-  it('replaces the previously checked employee instead of adjusting party size when party size is 1', async () => {
+  it("replaces the previously checked employee instead of adjusting party size when party size is 1", async () => {
     const { container, root } = await renderAndLoginForEmployeeSelection();
 
-    const partySizeInput = findControlInLabel(container, 'Party size', 'input') as HTMLInputElement | null;
-    expect(partySizeInput?.value).toBe('1');
+    const partySizeInput = findControlInLabel(
+      container,
+      "Party size",
+      "input",
+    ) as HTMLInputElement | null;
+    expect(partySizeInput?.value).toBe("1");
 
     await openEmployeeDropdown(container);
-    const annaCheckbox = findEmployeeCheckbox(container, 'Anna');
-    const benCheckbox = findEmployeeCheckbox(container, 'Ben');
+    const annaCheckbox = findEmployeeCheckbox(container, "Anna");
+    const benCheckbox = findEmployeeCheckbox(container, "Ben");
     expect(annaCheckbox).not.toBeNull();
     expect(benCheckbox).not.toBeNull();
 
@@ -728,22 +1255,26 @@ describe('App employee selection checkbox behavior', () => {
 
     expect((benCheckbox as HTMLInputElement).checked).toBe(true);
     expect((annaCheckbox as HTMLInputElement).checked).toBe(false);
-    expect((partySizeInput as HTMLInputElement).value).toBe('1');
+    expect((partySizeInput as HTMLInputElement).value).toBe("1");
 
     await cleanupRender(root, container);
   });
 
-  it('blocks checking an extra employee and shows a notice once selected count reaches party size', async () => {
+  it("blocks checking an extra employee and shows a notice once selected count reaches party size", async () => {
     const { container, root } = await renderAndLoginForEmployeeSelection();
 
-    const partySizeInput = findControlInLabel(container, 'Party size', 'input') as HTMLInputElement | null;
+    const partySizeInput = findControlInLabel(
+      container,
+      "Party size",
+      "input",
+    ) as HTMLInputElement | null;
     expect(partySizeInput).not.toBeNull();
-    await setControlValue(partySizeInput as HTMLInputElement, '2');
+    await setControlValue(partySizeInput as HTMLInputElement, "2");
 
     await openEmployeeDropdown(container);
-    const annaCheckbox = findEmployeeCheckbox(container, 'Anna');
-    const benCheckbox = findEmployeeCheckbox(container, 'Ben');
-    const caraCheckbox = findEmployeeCheckbox(container, 'Cara');
+    const annaCheckbox = findEmployeeCheckbox(container, "Anna");
+    const benCheckbox = findEmployeeCheckbox(container, "Ben");
+    const caraCheckbox = findEmployeeCheckbox(container, "Cara");
     expect(annaCheckbox).not.toBeNull();
     expect(benCheckbox).not.toBeNull();
     expect(caraCheckbox).not.toBeNull();
@@ -759,10 +1290,10 @@ describe('App employee selection checkbox behavior', () => {
     expect((caraCheckbox as HTMLInputElement).checked).toBe(false);
     expect((annaCheckbox as HTMLInputElement).checked).toBe(true);
     expect((benCheckbox as HTMLInputElement).checked).toBe(true);
-    expect((partySizeInput as HTMLInputElement).value).toBe('2');
+    expect((partySizeInput as HTMLInputElement).value).toBe("2");
 
-    const notice = container.querySelector('.message.error');
-    expect(notice?.textContent).toContain('reached the party size');
+    const notice = container.querySelector(".message.error");
+    expect(notice?.textContent).toContain("reached the party size");
 
     await cleanupRender(root, container);
   });

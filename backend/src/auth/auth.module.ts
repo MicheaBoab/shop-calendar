@@ -17,9 +17,15 @@ import { ShopsModule } from '../shops/shops.module';
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_ACCESS_SECRET', 'dev-access-secret'),
+        secret: configService.get<string>(
+          'JWT_ACCESS_SECRET',
+          'dev-access-secret',
+        ),
         signOptions: {
-          expiresIn: configService.get<string>('JWT_ACCESS_EXPIRES_IN', '15m') as StringValue,
+          expiresIn: configService.get<string>(
+            'JWT_ACCESS_EXPIRES_IN',
+            '15m',
+          ) as StringValue,
         },
       }),
     }),

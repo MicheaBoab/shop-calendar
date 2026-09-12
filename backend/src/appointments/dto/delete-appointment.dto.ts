@@ -1,2 +1,1 @@
-export class DeleteAppointmentDto {
-}
+export class DeleteAppointmentDto {}

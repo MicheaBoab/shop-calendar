@@ -9,7 +9,10 @@ const DEFAULT_SLOT_MAX_TIME = '23:00:00';
 
 @Injectable()
 export class SystemSettingsService {
-  constructor(@Inject(SHOP_SCOPED_PRISMA) private readonly prismaService: ShopScopedPrismaClient) {}
+  constructor(
+    @Inject(SHOP_SCOPED_PRISMA)
+    private readonly prismaService: ShopScopedPrismaClient,
+  ) {}
 
   async getCalendarWindow() {
     const shopId = requireCurrentShopId();
@@ -56,7 +59,9 @@ export class SystemSettingsService {
 
   private assertWindowRange(slotMinTime: string, slotMaxTime: string) {
     if (this.toMinutes(slotMinTime) >= this.toMinutes(slotMaxTime)) {
-      throw new BadRequestException('slotMinTime must be earlier than slotMaxTime');
+      throw new BadRequestException(
+        'slotMinTime must be earlier than slotMaxTime',
+      );
     }
   }
 

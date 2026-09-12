@@ -1,4 +1,10 @@
-import { BadRequestException, CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
+import {
+  BadRequestException,
+  CallHandler,
+  ExecutionContext,
+  Injectable,
+  NestInterceptor,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Observable } from 'rxjs';
 import { shopContextStorage } from './shop-context';
@@ -27,20 +33,26 @@ export class ShopContextInterceptor implements NestInterceptor {
     const request = context.switchToHttp().getRequest<RequestWithUser>();
     const user = request.user;
 
-    const skipShopScope = this.reflector.getAllAndOverride<boolean>(SKIP_SHOP_SCOPE_KEY, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
+    const skipShopScope = this.reflector.getAllAndOverride<boolean>(
+      SKIP_SHOP_SCOPE_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
     if (!user || skipShopScope) {
       return next.handle();
     }
 
     if (!user.activeShopId) {
-      throw new BadRequestException('No shop selected. Call /auth/select-shop before using this endpoint.');
+      throw new BadRequestException(
+        'No shop selected. Call /auth/select-shop before using this endpoint.',
+      );
     }
 
-    const store = { shopId: user.activeShopId, userId: user.sub, role: user.role };
+    const store = {
+      shopId: user.activeShopId,
+      userId: user.sub,
+      role: user.role,
+    };
 
     return new Observable((subscriber) => {
       shopContextStorage.run(store, () => {

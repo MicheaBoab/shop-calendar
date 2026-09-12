@@ -117,6 +117,7 @@ interface AdminCreateUserFormState {
   password: string;
   confirmPassword: string;
   displayName: string;
+  role: UserRoleValue;
 }
 
 interface AuditLogRecord {
@@ -147,6 +148,8 @@ type UserStatusValue = 'ACTIVE' | 'INACTIVE';
 type AdminPanel = 'calendar' | 'overview' | 'admin' | 'logs';
 type TodayAgendaMode = 'time' | 'employee';
 type CalendarView = 'timeGridWeek' | 'timeGridThreeDay' | 'timeGridDay';
+type UserRoleValue = 'ADMIN' | 'EMPLOYEE' | 'MULTI_SHOP_EMPLOYEE';
+type ManagedUserRoleValue = 'EMPLOYEE' | 'MULTI_SHOP_EMPLOYEE';
 const DURATION_QUICK_SELECT_MINUTES = [30, 60, 75, 90, 120] as const;
 
 const API_BASE_URL = resolveApiBaseUrl({
@@ -155,6 +158,11 @@ const API_BASE_URL = resolveApiBaseUrl({
   protocol: typeof window !== 'undefined' ? window.location.protocol : undefined,
 });
 const AUTH_STORAGE_KEY = 'shop-calendar-auth';
+const EMPLOYEE_MANAGED_ROLES: ManagedUserRoleValue[] = ['EMPLOYEE', 'MULTI_SHOP_EMPLOYEE'];
+
+const isAdminRole = (role: string) => role === 'ADMIN';
+const canSwitchShopRole = (role: string) => role === 'ADMIN' || role === 'MULTI_SHOP_EMPLOYEE';
+const isEmployeeLikeRole = (role: string) => role === 'EMPLOYEE' || role === 'MULTI_SHOP_EMPLOYEE';
 
 const isAuthResponse = (value: unknown): value is AuthResponse => {
   if (!value || typeof value !== 'object') {
@@ -226,6 +234,8 @@ const CALENDAR_EVENT_BACKGROUND_DARK = '#0f172a';
 const CALENDAR_EVENT_TEXT_LIGHT = '#f8fafc';
 const CALENDAR_EVENT_EMPLOYEE_TINT = 28;
 const CALENDAR_PENDING_EVENT_TINT = 20;
+const CANCELLED_APPOINTMENT_ACCENT = '#94a3b8';
+const CANCELLED_APPOINTMENT_BACKGROUND = 'rgba(71, 85, 105, 0.78)';
 
 const hashStringToHue = (value: string) => {
   let hash = 2166136261;
@@ -244,6 +254,8 @@ const colorFromStableIdentifier = (identifier: string) => {
 };
 
 const isActiveStatus = (status: string) => status.trim().toUpperCase() === 'ACTIVE';
+
+const isCancelledAppointment = (appointment: AppointmentRecord) => appointment.status?.trim().toUpperCase() === 'CANCELLED';
 
 const formatAppointmentWindow = (startAt: string, endAt: string, locale: string) => {
   const timeFormatter = new Intl.DateTimeFormat(locale, {
@@ -383,6 +395,7 @@ const createInitialAdminCreateUserForm = (): AdminCreateUserFormState => ({
   password: '',
   confirmPassword: '',
   displayName: '',
+  role: 'EMPLOYEE',
 });
 
 const readEventNoteFromRecord = (record: Record<string, unknown> | null | undefined) => {
@@ -688,7 +701,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (auth?.user.role !== 'ADMIN') {
+    if (!auth || !isAdminRole(auth.user.role)) {
       setAdminPanel('calendar');
     }
   }, [auth]);
@@ -719,7 +732,7 @@ function App() {
   }, [isMobileCalendarLayout]);
 
   const employeeOptions = useMemo(
-    () => users.filter((user) => isActiveStatus(user.status) && user.role === 'EMPLOYEE'),
+    () => users.filter((user) => isActiveStatus(user.status) && isEmployeeLikeRole(user.role)),
     [users],
   );
 
@@ -1082,7 +1095,7 @@ function App() {
   }, [loadAppointments]);
 
   useEffect(() => {
-    if (!auth || auth.user.role !== 'ADMIN') {
+    if (!auth || !canSwitchShopRole(auth.user.role)) {
       return;
     }
     fetchJson('/shops')
@@ -1150,7 +1163,7 @@ function App() {
   }, [auth?.accessToken, scheduleAppointmentsRefresh]);
 
   useEffect(() => {
-    if (!auth || auth.user.role !== 'ADMIN' || adminPanel !== 'logs') {
+    if (!auth || !isAdminRole(auth.user.role) || adminPanel !== 'logs') {
       return;
     }
 
@@ -1216,7 +1229,9 @@ function App() {
     }
 
     const partySize = Math.max(1, parseInt(form.partySize, 10) || 1);
-    const selectedEmployeeIds = form.employeeIds;
+    const selectedEmployeeIds = form.employeeIds.filter(
+      (employeeId) => !pendingEmployee || employeeId !== pendingEmployee.id,
+    );
 
     if (!form.startDate || !form.startTime || !form.phone) {
       setNotice(t('notices.fillRequired'), 'error');
@@ -1255,7 +1270,7 @@ function App() {
       return;
     }
 
-    if (isLocalDateTimeInPast(startAt) && auth?.user.role !== 'ADMIN') {
+    if (isLocalDateTimeInPast(startAt) && !isAdminRole(auth.user.role)) {
       setNotice(t('notices.startInPast'), 'error');
       return;
     }
@@ -1353,7 +1368,7 @@ function App() {
       return;
     }
 
-    const confirmed = window.confirm(auth.user.role === 'ADMIN' ? t('confirm.deleteAppointmentAdmin') : t('confirm.deleteAppointmentEmployee'));
+    const confirmed = window.confirm(isAdminRole(auth.user.role) ? t('confirm.deleteAppointmentAdmin') : t('confirm.deleteAppointmentEmployee'));
     if (!confirmed) {
       setNotice(t('notices.actionCancelled'), 'info');
       return;
@@ -1368,7 +1383,7 @@ function App() {
         setEditingId(null);
         setForm(createInitialForm());
       }
-      setNotice(auth.user.role === 'ADMIN' ? t('notices.appointmentDeleted') : t('notices.appointmentCancelled'), 'success');
+      setNotice(isAdminRole(auth.user.role) ? t('notices.appointmentDeleted') : t('notices.appointmentCancelled'), 'success');
       await loadAppointments();
     } catch (error) {
       setNotice(getDisplayError(error, t('notices.deleteFailed')), 'error');
@@ -1379,14 +1394,14 @@ function App() {
 
   const handleAdminCreateUser = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!auth || auth.user.role !== 'ADMIN') {
+    if (!auth || !isAdminRole(auth.user.role)) {
       return;
     }
     const username = adminCreateUserForm.username.trim();
     const password = adminCreateUserForm.password;
     const confirmPassword = adminCreateUserForm.confirmPassword;
     const displayName = adminCreateUserForm.displayName.trim() || username;
-    const role = 'EMPLOYEE';
+    const role = adminCreateUserForm.role;
 
     if (password !== confirmPassword) {
       setNotice(t('notices.passwordMismatch'), 'error');
@@ -1411,7 +1426,7 @@ function App() {
 
   const handleAdminResetPassword = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!auth || auth.user.role !== 'ADMIN') {
+    if (!auth || !isAdminRole(auth.user.role)) {
       return;
     }
 
@@ -1459,7 +1474,7 @@ function App() {
 
   const handleCalendarWindowSave = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!auth || auth.user.role !== 'ADMIN') {
+    if (!auth || !isAdminRole(auth.user.role)) {
       return;
     }
 
@@ -1487,7 +1502,7 @@ function App() {
   };
 
   const handleToggleUserStatus = async (userId: string, nextStatus: UserStatusValue) => {
-    if (!auth || auth.user.role !== 'ADMIN') {
+    if (!auth || !isAdminRole(auth.user.role)) {
       return;
     }
     setLoading(true);
@@ -1506,7 +1521,7 @@ function App() {
   };
 
   const handleRemoveUser = async (user: UserRecord) => {
-    if (!auth || auth.user.role !== 'ADMIN') {
+    if (!auth || !isAdminRole(auth.user.role)) {
       return;
     }
     const confirmed = window.confirm(t('confirm.removeUser', { displayName: user.displayName }));
@@ -1769,7 +1784,7 @@ function App() {
   }, []);
 
   const handleRefreshLogs = useCallback(async () => {
-    if (!auth || auth.user.role !== 'ADMIN') {
+    if (!auth || !isAdminRole(auth.user.role)) {
       return;
     }
 
@@ -1850,15 +1865,17 @@ function App() {
 
   const renderCalendarEventContent = useCallback((eventContent: EventContentArg) => {
     const note = resolveCalendarEventNote(eventContent.event);
+    const isCancelled = String(eventContent.event.extendedProps.status ?? '').trim().toUpperCase() === 'CANCELLED';
 
     return (
       <div className="calendar-event-content">
         <div className="calendar-event-time">{eventContent.timeText}</div>
         <div className="calendar-event-title">{eventContent.event.title}</div>
+        {isCancelled ? <div className="calendar-event-status-badge">{t('status.cancelled')}</div> : null}
         {note ? <div className="calendar-event-note">{note}</div> : null}
       </div>
     );
-  }, []);
+  }, [t]);
 
   const calendarNoteTooltipText = useMemo<CalendarNoteTooltipText>(() => ({
     closeButtonLabel: t('tooltip.close'),
@@ -1896,26 +1913,34 @@ function App() {
       .map((appointment) => {
         const employeeColor = getAppointmentColor(appointment);
         const isPendingAssignment = isAppointmentTentative(appointment);
+        const isCancelled = isCancelledAppointment(appointment);
         const normalizedNote = appointment.note?.trim();
         const titleParts = [getAppointmentDisplayName(appointment), appointment.customerName ?? ''];
-        const backgroundColor = isPendingAssignment
+        const backgroundColor = isCancelled
+          ? CANCELLED_APPOINTMENT_BACKGROUND
+          : isPendingAssignment
           ? `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_PENDING_EVENT_TINT}%, ${DEFAULT_PENDING_EMPLOYEE_COLOR} ${CALENDAR_PENDING_EVENT_TINT}%)`
           : `color-mix(in srgb, ${CALENDAR_EVENT_BACKGROUND_DARK} ${100 - CALENDAR_EVENT_EMPLOYEE_TINT}%, ${employeeColor} ${CALENDAR_EVENT_EMPLOYEE_TINT}%)`;
+        const classNames = [
+          isPendingAssignment ? 'calendar-event-pending-assignment' : 'calendar-event-assigned',
+          isCancelled ? 'calendar-event-cancelled' : '',
+        ].filter(Boolean);
         return {
           id: appointment.id,
           title: titleParts.filter(Boolean).join(' • '),
           start: appointment.startAt,
           end: appointment.endAt,
           backgroundColor,
-          borderColor: employeeColor,
-          textColor: CALENDAR_EVENT_TEXT_LIGHT,
+          borderColor: isCancelled ? CANCELLED_APPOINTMENT_ACCENT : employeeColor,
+          textColor: isCancelled ? '#e2e8f0' : CALENDAR_EVENT_TEXT_LIGHT,
           borderWidth: '1px',
           display: 'block',
-          classNames: [isPendingAssignment ? 'calendar-event-pending-assignment' : 'calendar-event-assigned'],
+          classNames,
           extendedProps: {
             appointmentId: appointment.id,
             employeeId: appointment.employeeId,
             employeeName: getAppointmentDisplayName(appointment),
+            status: appointment.status,
             note: normalizedNote,
             remark: normalizedNote,
             description: normalizedNote,
@@ -2007,7 +2032,8 @@ function App() {
     );
   }
 
-  const isAdmin = auth.user.role === 'ADMIN';
+  const isAdmin = isAdminRole(auth.user.role);
+  const canSwitchShop = canSwitchShopRole(auth.user.role);
   const showCalendarPanel = !isAdmin || adminPanel === 'calendar';
   const showOverviewPanel = isAdmin && adminPanel === 'overview';
   const showAdminPanel = isAdmin && adminPanel === 'admin';
@@ -2060,7 +2086,7 @@ function App() {
           <p>{t('topbar.signedInAs', { displayName: auth.user.displayName, role: auth.user.role })}</p>
         </div>
         <div className="topbar-actions">
-          {isAdmin ? (
+          {canSwitchShop ? (
             <button type="button" onClick={handleSwitchShop}>
               {t('topbar.switchShop', { shopName: currentShopName })}
             </button>
@@ -2486,21 +2512,25 @@ function App() {
                   <div className="agenda-empty">{t('agenda.noneToday')}</div>
                 ) : todayAgendaMode === 'time' ? (
                   <div className="agenda-list">
-                    {todayAgendaAppointments.map((appointment) => (
-                      <button
-                        key={appointment.id}
-                        type="button"
-                        className="agenda-item"
-                        style={{ '--agenda-accent': getEmployeeColor(appointment.employeeId) } as CSSProperties}
-                        onClick={() => handleEdit(appointment)}
-                      >
-                        <div className="agenda-time">{formatAgendaTimeRange(appointment.startAt, appointment.endAt, locale)}</div>
-                        <div className="agenda-meta">
-                          <span>{getAppointmentDisplayName(appointment)}</span>
-                          <span>{t('agenda.phone', { value: appointment.phone })}</span>
-                        </div>
-                      </button>
-                    ))}
+                    {todayAgendaAppointments.map((appointment) => {
+                      const isCancelled = isCancelledAppointment(appointment);
+                      return (
+                        <button
+                          key={appointment.id}
+                          type="button"
+                          className={`agenda-item${isCancelled ? ' agenda-item-cancelled' : ''}`}
+                          style={{ '--agenda-accent': isCancelled ? CANCELLED_APPOINTMENT_ACCENT : getEmployeeColor(appointment.employeeId) } as CSSProperties}
+                          onClick={() => handleEdit(appointment)}
+                        >
+                          <div className="agenda-time">{formatAgendaTimeRange(appointment.startAt, appointment.endAt, locale)}</div>
+                          <div className="agenda-meta">
+                            <span>{getAppointmentDisplayName(appointment)}</span>
+                            <span>{t('agenda.phone', { value: appointment.phone })}</span>
+                            {isCancelled ? <span className="agenda-status-badge">{t('status.cancelled')}</span> : null}
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="agenda-groups">
@@ -2511,20 +2541,24 @@ function App() {
                           <strong>{group.employeeName}</strong>
                         </div>
                         <div className="agenda-list">
-                          {group.appointments.map((appointment) => (
-                            <button
-                              key={appointment.id}
-                              type="button"
-                              className="agenda-item"
-                              style={{ '--agenda-accent': getEmployeeColor(appointment.employeeId) } as CSSProperties}
-                              onClick={() => handleEdit(appointment)}
-                            >
-                              <div className="agenda-time">{formatAgendaTimeRange(appointment.startAt, appointment.endAt, locale)}</div>
-                              <div className="agenda-meta">
-                                <span>{t('agenda.phone', { value: appointment.phone })}</span>
-                              </div>
-                            </button>
-                          ))}
+                          {group.appointments.map((appointment) => {
+                            const isCancelled = isCancelledAppointment(appointment);
+                            return (
+                              <button
+                                key={appointment.id}
+                                type="button"
+                                className={`agenda-item${isCancelled ? ' agenda-item-cancelled' : ''}`}
+                                style={{ '--agenda-accent': isCancelled ? CANCELLED_APPOINTMENT_ACCENT : getEmployeeColor(appointment.employeeId) } as CSSProperties}
+                                onClick={() => handleEdit(appointment)}
+                              >
+                                <div className="agenda-time">{formatAgendaTimeRange(appointment.startAt, appointment.endAt, locale)}</div>
+                                <div className="agenda-meta">
+                                  <span>{t('agenda.phone', { value: appointment.phone })}</span>
+                                  {isCancelled ? <span className="agenda-status-badge">{t('status.cancelled')}</span> : null}
+                                </div>
+                              </button>
+                            );
+                          })}
                         </div>
                       </section>
                     ))}
@@ -2563,11 +2597,12 @@ function App() {
             {appointments.map((appointment) => {
               const displayName = getAppointmentDisplayName(appointment);
               const accentColor = getAppointmentColor(appointment);
+              const isCancelled = isCancelledAppointment(appointment);
               return (
-                <div key={appointment.id} className="appointment-item" style={{ borderLeftColor: accentColor }}>
+                <div key={appointment.id} className={`appointment-item${isCancelled ? ' appointment-item-cancelled' : ''}`} style={{ borderLeftColor: isCancelled ? CANCELLED_APPOINTMENT_ACCENT : accentColor }}>
                   <div className="appointment-main">
                     <div className="appointment-heading">
-                      <span className="employee-marker" style={{ backgroundColor: accentColor }} />
+                      <span className="employee-marker" style={{ backgroundColor: isCancelled ? CANCELLED_APPOINTMENT_ACCENT : accentColor }} />
                       <div>
                         <strong>{displayName}</strong>
                         <div className="appointment-time">{formatAppointmentWindow(appointment.startAt, appointment.endAt, locale)}</div>
@@ -2576,11 +2611,12 @@ function App() {
                     <div className="appointment-details">
                       <span className="appointment-badge">{t('overview.badgePhone', { value: appointment.phone })}</span>
                       <span className="appointment-badge appointment-price">{t('overview.badgePrice', { value: appointment.price })}</span>
+                      {isCancelled ? <span className="appointment-badge appointment-status-cancelled">{t('status.cancelled')}</span> : null}
                     </div>
                   </div>
                   <div className="appointment-actions">
                     <button type="button" onClick={() => handleEdit(appointment)}>{t('actions.edit')}</button>
-                    <button type="button" onClick={() => void handleDelete(appointment.id)}>{auth.user.role === 'ADMIN' ? t('actions.delete') : t('actions.cancelShort')}</button>
+                    <button type="button" onClick={() => void handleDelete(appointment.id)}>{isAdmin ? t('actions.delete') : t('actions.cancelShort')}</button>
                   </div>
                 </div>
               );
@@ -2670,6 +2706,18 @@ function App() {
                 className="read-only-field"
               />
             </label>
+            <label>
+              {t('admin.role')}
+              <select
+                name="role"
+                value={adminCreateUserForm.role}
+                onChange={(event) => setAdminCreateUserForm((current) => ({ ...current, role: event.target.value as UserRoleValue }))}
+              >
+                {EMPLOYEE_MANAGED_ROLES.map((role) => (
+                  <option key={role} value={role}>{t(`role.${role}`)}</option>
+                ))}
+              </select>
+            </label>
             <button type="submit">{t('admin.createUser')}</button>
           </form>
 
@@ -2719,7 +2767,7 @@ function App() {
                   >
                     {isActiveStatus(user.status) ? t('admin.disable') : t('admin.enable')}
                   </button>
-                  {user.role !== 'ADMIN' ? (
+                  {!isAdminRole(user.role) ? (
                     <button type="button" onClick={() => void handleRemoveUser(user)}>{t('admin.remove')}</button>
                   ) : null}
                 </div>
