@@ -2174,11 +2174,13 @@ function App() {
                     <div className="row quick-date-shortcuts party-size-control">
                       <button
                         type="button"
-                        disabled={partySizeValue <= Math.max(1, form.employeeIds.length)}
+                        disabled={partySizeValue <= 1}
                         onClick={() => setForm((current) => {
-                          const minValue = Math.max(1, current.employeeIds.length);
                           const currentValue = parseInt(current.partySize, 10) || 1;
-                          return { ...current, partySize: String(Math.max(minValue, currentValue - 1)) };
+                          const nextValue = Math.max(1, currentValue - 1);
+                          // Trim excess assigned employees to fit the reduced party size.
+                          const employeeIds = current.employeeIds.slice(0, nextValue);
+                          return { ...current, partySize: String(nextValue), employeeIds };
                         })}
                       >
                         -1
@@ -2190,10 +2192,11 @@ function App() {
                         value={form.partySize}
                         onChange={(e) => setForm({ ...form, partySize: e.target.value })}
                         onBlur={() => setForm((current) => {
-                          const minValue = Math.max(1, current.employeeIds.length);
                           const parsed = parseInt(current.partySize, 10);
-                          const clamped = Number.isFinite(parsed) ? Math.min(99, Math.max(minValue, parsed)) : minValue;
-                          return { ...current, partySize: String(clamped) };
+                          const clamped = Number.isFinite(parsed) ? Math.min(99, Math.max(1, parsed)) : 1;
+                          // Trim excess assigned employees to fit the reduced party size.
+                          const employeeIds = current.employeeIds.slice(0, clamped);
+                          return { ...current, partySize: String(clamped), employeeIds };
                         })}
                       />
                       <button
