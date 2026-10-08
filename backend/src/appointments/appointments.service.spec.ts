@@ -34,6 +34,22 @@ const makeAppointment = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('AppointmentsService', () => {
+  describe('whole USD prices', () => {
+    const priceService = new AppointmentsService({} as any, {} as any, {} as any);
+
+    it('stores whole dollars as cents and displays them without decimals', () => {
+      expect(priceService['parseUsdToCents']('70')).toBe(7000);
+      expect(priceService['parseUsdToCents']('0')).toBe(0);
+      expect(priceService['formatCentsToUsd'](7000)).toBe('70');
+      expect(priceService['formatCentsToUsd'](7050)).toBe('70.50');
+      expect(priceService['formatCentsToUsd'](7001)).toBe('70.01');
+    });
+
+    it.each(['70.00', '70.50', '-1', '1e2', '', '21474837'])('rejects new price %s', (price) => {
+      expect(() => priceService['parseUsdToCents'](price)).toThrow('whole USD amount');
+    });
+  });
+
   const prismaService = {
     user: {
       findFirst: jest.fn(),
@@ -81,7 +97,7 @@ describe('AppointmentsService', () => {
       id: 'appt-2',
       employeeId: 'emp-3',
       phone: '3125559999',
-      price: 4050,
+      price: 4000,
       customerName: 'Bob',
       updatedById: 'employee-1',
     });
@@ -96,13 +112,13 @@ describe('AppointmentsService', () => {
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       phone: '3125559999',
-      price: '40.50',
+      price: '40',
       updatedById: 'employee-1',
     });
 
     expect(result.employeeId).toBe('emp-3');
     expect(result.phone).toBe('3125559999');
-    expect(result.price).toBe('40.50');
+    expect(result.price).toBe('40');
     expect(
       appointmentsEventsService.publishAppointmentsChanged,
     ).toHaveBeenCalledWith('employee-1');
@@ -119,14 +135,14 @@ describe('AppointmentsService', () => {
     expect(auditCall.beforePayload.appointments[0]).toEqual(
       expect.objectContaining({
         phone: '3125551234',
-        price: '25.00',
+        price: '25',
         customerName: 'Alice',
       }),
     );
     expect(auditCall.afterPayload.appointments[0]).toEqual(
       expect.objectContaining({
         phone: '3125559999',
-        price: '40.50',
+        price: '40',
         customerName: 'Bob',
       }),
     );
@@ -154,6 +170,69 @@ describe('AppointmentsService', () => {
       customerName: 'Alice',
       note: 'Prefers morning appointments',
     });
+  });
+
+  it.each([false, true])('saves a 45-minute appointment with whole dollars (group: %s)', async (group) => {
+    const startAt = futureIso(15, 0);
+    const endAt = futureIso(15, 45);
+    prismaService.appointment.findFirst.mockResolvedValue(null);
+    prismaService.appointment.create.mockImplementation(async ({ data }: any) => makeAppointment(data));
+    await service.createAppointment({
+      ...(group ? { employeeIds: ['emp-1'], partySize: 1 } : { employeeId: 'emp-1' }),
+      startAt,
+      endAt,
+      phone: '3125551234',
+      price: '70',
+      createdById: 'admin-1',
+    });
+    expect(prismaService.appointment.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ price: 7000, startAt: new Date(startAt), endAt: new Date(endAt) }),
+    }));
+  });
+
+  it.each([false, true])('preserves historical cents when only another field changes (group: %s)', async (group) => {
+    const anchor = makeAppointment({ price: 7050, ...(group ? { groupId: 'historical-group' } : {}) });
+    const pendingMember = makeAppointment({ id: 'pending-appt', employeeId: 'pending-id', groupId: 'historical-group', price: 7001 });
+    prismaService.appointment.findFirst.mockResolvedValueOnce(anchor).mockResolvedValue(null);
+    prismaService.user.findFirst.mockResolvedValue({ id: 'pending-id' });
+    prismaService.appointment.findMany.mockResolvedValue([anchor, pendingMember]);
+    prismaService.appointment.update.mockImplementation(async ({ where, data }: any) => makeAppointment({
+      ...(where.id === anchor.id ? anchor : pendingMember), ...data,
+    }));
+    const startAt = futureIso(15, 0);
+    const endAt = futureIso(15, 45);
+    const result = await service.updateAppointment(anchor.id, {
+      startAt, endAt, note: 'Changed note', updatedById: 'admin-1',
+    });
+    const savedAnchor = group ? result.appointments.find((appointment) => appointment.id === anchor.id) : result;
+    expect(savedAnchor.price).toBe('70.50');
+    expect(prismaService.appointment.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: anchor.id }), data: expect.objectContaining({
+        price: 7050, note: 'Changed note', startAt: new Date(startAt), endAt: new Date(endAt),
+      }),
+    }));
+    if (group) {
+      expect(prismaService.appointment.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ id: pendingMember.id }), data: expect.objectContaining({ price: 7001 }),
+      }));
+    }
+  });
+
+  it('replaces a historical fractional price only when a whole-dollar price is submitted', async () => {
+    const existing = makeAppointment({ price: 7050 });
+    prismaService.appointment.findFirst.mockResolvedValueOnce(existing).mockResolvedValue(null);
+    prismaService.appointment.update.mockImplementation(async ({ data }: any) => makeAppointment({
+      ...existing, ...data,
+    }));
+
+    const result = await service.updateAppointment(existing.id, {
+      price: '70', updatedById: 'admin-1', userRole: 'ADMIN',
+    });
+
+    expect(prismaService.appointment.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ price: 7000 }),
+    }));
+    expect(result.price).toBe('70');
   });
 
   it('isolates customer lookup by shop when the active shop context changes', async () => {
@@ -483,7 +562,7 @@ describe('AppointmentsService', () => {
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       phone: '3125551234',
-      price: '25.00',
+      price: '25',
       createdById: 'admin-1',
     });
 
@@ -523,7 +602,7 @@ describe('AppointmentsService', () => {
       startAt: futureIso(15, 15),
       endAt: futureIso(15, 45),
       phone: '3125551234',
-      price: '25.00',
+      price: '25',
       createdById: 'admin-1',
     });
 
@@ -546,7 +625,7 @@ describe('AppointmentsService', () => {
         startAt: futureIso(15, 0),
         endAt: futureIso(16, 0),
         phone: '3125551234',
-        price: '25.00',
+        price: '25',
         createdById: 'admin-1',
       }),
     ).rejects.toThrow('overlaps an existing appointment');
@@ -567,7 +646,7 @@ describe('AppointmentsService', () => {
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       phone: '3125551234',
-      price: '25.00',
+      price: '25',
       createdById: 'admin-1',
     });
 
@@ -616,7 +695,7 @@ describe('AppointmentsService', () => {
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       phone: '3125551234',
-      price: '25.00',
+      price: '25',
       createdById: 'admin-1',
     });
 
@@ -637,7 +716,7 @@ describe('AppointmentsService', () => {
         startAt: futureIso(15, 0),
         endAt: futureIso(16, 0),
         phone: '3125551234',
-        price: '25.00',
+        price: '25',
         createdById: 'admin-1',
       } as any),
     ).rejects.toThrow('Selected employees cannot exceed party size');
@@ -679,7 +758,7 @@ describe('AppointmentsService', () => {
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       phone: '3125551234',
-      price: '25.00',
+      price: '25',
       createdById: 'admin-1',
     });
 
@@ -699,7 +778,7 @@ describe('AppointmentsService', () => {
         startAt: futureIso(15, 0),
         endAt: futureIso(16, 0),
         phone: '3125551234',
-        price: '25.00',
+        price: '25',
         createdById: 'admin-1',
       } as any),
     ).rejects.toThrow('Duplicate employees are not allowed');
@@ -718,7 +797,7 @@ describe('AppointmentsService', () => {
         startAt: futureIso(15, 0),
         endAt: futureIso(16, 0),
         phone: '3125551234',
-        price: '25.00',
+        price: '25',
         createdById: 'admin-1',
       } as any),
     ).rejects.toThrow('overlaps an existing appointment');

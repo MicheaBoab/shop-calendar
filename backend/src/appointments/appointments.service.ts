@@ -422,7 +422,7 @@ export class AppointmentsService {
         records.push(
           await tx.appointment.update({
             where: { id: member.id },
-            data: { ...sharedData, groupId },
+            data: { ...sharedData, price: dto.price ? sharedData.price : member.price, groupId },
           }),
         );
       }
@@ -468,7 +468,7 @@ export class AppointmentsService {
         records.push(
           await tx.appointment.update({
             where: { id: member.id },
-            data: { ...sharedData, groupId },
+            data: { ...sharedData, price: dto.price ? sharedData.price : member.price, groupId },
           }),
         );
       }
@@ -856,24 +856,18 @@ export class AppointmentsService {
   }
 
   private parseUsdToCents(value: string) {
-    const [dollars, cents] = value.split('.');
-    const normalizedDollars = Number(dollars);
-    const normalizedCents = Number(cents);
-
-    if (
-      !Number.isInteger(normalizedDollars) ||
-      !Number.isInteger(normalizedCents)
-    ) {
+    const cents = Number(value) * 100;
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(cents) || cents > 2147483647) {
       throw new BadRequestException(
-        'price must be a valid USD amount with two decimals',
+        'price must be a non-negative whole USD amount within the supported range',
       );
     }
 
-    return normalizedDollars * 100 + normalizedCents;
+    return cents;
   }
 
   private formatCentsToUsd(value: number) {
-    return (value / 100).toFixed(2);
+    return value % 100 === 0 ? String(value / 100) : (value / 100).toFixed(2);
   }
 
   private mapAppointmentForResponse(appointment: Appointment) {

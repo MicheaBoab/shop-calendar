@@ -150,7 +150,7 @@ type TodayAgendaMode = 'time' | 'employee';
 type CalendarView = 'timeGridWeek' | 'timeGridThreeDay' | 'timeGridDay';
 type UserRoleValue = 'ADMIN' | 'EMPLOYEE' | 'MULTI_SHOP_EMPLOYEE';
 type ManagedUserRoleValue = 'EMPLOYEE' | 'MULTI_SHOP_EMPLOYEE';
-const DURATION_QUICK_SELECT_MINUTES = [30, 60, 75, 90, 120] as const;
+const DURATION_QUICK_SELECT_MINUTES = [30, 45, 60, 75, 90, 120] as const;
 
 const API_BASE_URL = resolveApiBaseUrl({
   envBaseUrl: import.meta.env.VITE_API_BASE_URL,
@@ -632,6 +632,7 @@ function App() {
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
   const [form, setForm] = useState<AppointmentFormState>(() => createInitialForm());
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [originalEditingPrice, setOriginalEditingPrice] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string>('');
   const [messageTone, setMessageTone] = useState<MessageTone>('info');
@@ -1254,7 +1255,8 @@ function App() {
       return;
     }
 
-    if (form.price.trim() && !/^\d+(\.\d{2})$/.test(form.price)) {
+    const priceUnchanged = Boolean(editingId) && form.price === originalEditingPrice;
+    if (!priceUnchanged && form.price.trim() && !/^\d+$/.test(form.price)) {
       setNotice(t('notices.priceInvalid'), 'error');
       return;
     }
@@ -1303,7 +1305,7 @@ function App() {
         startAt: startAt.toISOString(),
         endAt: endAt.toISOString(),
         phone: form.phone,
-        price: form.price.trim() ? form.price : undefined,
+        price: !priceUnchanged && form.price.trim() ? form.price : undefined,
         customerName: form.customerName || undefined,
         note: form.note || undefined,
         createdById: auth.user.id,
@@ -1335,6 +1337,8 @@ function App() {
 
   const handleEdit = async (appointment: AppointmentRecord) => {
     setEditingId(appointment.id);
+    const editingPrice = appointment.price.replace(/\.00$/, '');
+    setOriginalEditingPrice(editingPrice);
     setNotice(t('notices.editingExisting'), 'info');
     const startAt = new Date(appointment.startAt);
     const endAt = new Date(appointment.endAt);
@@ -1357,7 +1361,7 @@ function App() {
         computeDurationBetweenMinutes(startAt, endAt) ?? DEFAULT_APPOINTMENT_DURATION_MINUTES,
       ),
       phone: appointment.phone,
-      price: appointment.price,
+      price: editingPrice,
       customerName: appointment.customerName ?? '',
       note: appointment.note ?? '',
     });
@@ -2377,7 +2381,7 @@ function App() {
                     <span className="field-label">
                       {t('editor.price')}
                     </span>
-                    <input type="number" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
+                    <input type="text" inputMode="numeric" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} />
                   </label>
                 </div>
                 <label>

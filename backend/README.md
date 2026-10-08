@@ -5,8 +5,9 @@ NestJS + Prisma backend for the shop appointment calendar MVP.
 ## Rules Implemented (Frozen)
 
 - Phone is required and must be digits only, length 10-15.
-- Price is required in USD with exactly 2 decimals (example: `25.00`).
-- Time must align to 30-minute intervals.
+- New or changed prices must be non-negative whole USD amounts (example: `70`), stored as integer cents.
+- Historical fractional amounts retain their exact cents. Omit `price` when editing other fields without changing the amount.
+- The calendar keeps its existing 30-minute grid; duration is not restricted to 30-minute multiples (including 45 and 75 minutes).
 - Same employee cannot have overlapping appointments.
 - Employee can edit all appointments in the shared view.
 - Delete flow split:
@@ -30,7 +31,7 @@ Required body fields:
 - `startAt`: ISO datetime
 - `endAt`: ISO datetime
 - `phone`: string, regex `^\d{10,15}$`
-- `price`: string, regex `^\d+(\.\d{2})$`
+- `price`: string, regex `^\d+$`, maximum `21474836` USD; existing omitted-price behavior is unchanged.
 
 Optional fields:
 - `customerName`
@@ -49,7 +50,7 @@ Role-sensitive behavior:
 
 ### Response Price Format
 
-Appointment responses expose `price` as a USD string with exactly two decimals.
+Appointment responses expose whole USD prices without `.00` (for example `70`). Historical fractional amounts keep two decimals (for example `70.50` or `70.01`). No historical data migration or rounding is performed.
 
 ## Development
 

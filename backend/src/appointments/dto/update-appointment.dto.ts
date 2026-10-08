@@ -49,7 +49,7 @@ export class UpdateAppointmentDto {
   phone?: string;
 
   @IsString()
-  @Matches(/^\d+(\.\d{2})$/)
+  @Matches(/^\d+$/, { message: 'price must be a non-negative whole USD amount' })
   @IsOptional()
   price?: string;
 

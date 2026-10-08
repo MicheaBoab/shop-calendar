@@ -631,7 +631,8 @@ describe("App interaction seams", () => {
     ) as HTMLInputElement | null;
     expect(priceInput).not.toBeNull();
     expect(startDateInput).not.toBeNull();
-    await setControlValue(priceInput as HTMLInputElement, "95.00");
+    expect(priceInput?.value).toBe("80");
+    await setControlValue(priceInput as HTMLInputElement, "95");
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     await setControlValue(
@@ -663,10 +664,74 @@ describe("App interaction seams", () => {
     );
     const payload = JSON.parse(String(patchCall?.[1]?.body ?? "{}"));
 
-    expect(payload.price).toBe("95.00");
+    expect(payload.price).toBe("95");
     expect(payload.partySize).toBe(1);
     expect(payload.employeeIds).toEqual(["emp-logged-in"]);
 
+    await cleanupRender(root, container);
+  });
+
+  it("saves a 45-minute appointment with a whole USD price", async () => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
+    await clickButton(container, "Mock date click");
+    await clickButton(container, "45");
+    const durationInput = findControlInLabel(container, "Duration (minutes)") as HTMLInputElement;
+    expect(durationInput.value).toBe("45");
+    await setControlValue(findControlInLabel(container, "Phone") as HTMLInputElement, "3125551234");
+    await setControlValue(findControlInLabel(container, "Price") as HTMLInputElement, "70");
+    await clickButton(container, "Create appointment");
+    await waitFor(() => fetchMock.mock.calls.some(([, init]) => init?.method === "POST" && String(init.body).includes('"price":"70"')));
+    const createCall = fetchMock.mock.calls.find(([input, init]) => String(input).includes("/appointments") && init?.method === "POST");
+    const payload = JSON.parse(String(createCall?.[1]?.body));
+    expect(payload.price).toBe("70");
+    expect(new Date(payload.endAt).getTime() - new Date(payload.startAt).getTime()).toBe(45 * 60000);
+    await cleanupRender(root, container);
+  });
+
+  it.each(["70.50", "70.01"])("preserves unchanged historical price %s when editing another field", async (price) => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280, {
+      appointments: [{ id: "appt-1", employeeId: "emp-1", startAt: "2026-07-30T14:00:00Z", endAt: "2026-07-30T14:45:00Z", phone: "3125551234", price, status: "SCHEDULED" }],
+    });
+    await clickButton(container, "Mock event click");
+    await waitFor(() => container.textContent?.includes("Update appointment") ?? false);
+    const priceInput = findControlInLabel(container, "Price") as HTMLInputElement;
+    expect(priceInput.value).toBe(price);
+    const noteInput = container.querySelector("textarea") as HTMLTextAreaElement;
+    await setControlValue(noteInput, "Changed note");
+    await clickButton(container, "Update appointment");
+    await waitFor(() => fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH"));
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PATCH");
+    const payload = JSON.parse(String(patchCall?.[1]?.body));
+    expect(payload).not.toHaveProperty("price");
+    expect(payload.note).toBe("Changed note");
+    await cleanupRender(root, container);
+  });
+
+  it("updates a historical fractional price to whole dollars with a 45-minute duration", async () => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280, {
+      appointments: [{ id: "appt-1", employeeId: "emp-1", startAt: "2026-07-30T14:00:00Z", endAt: "2026-07-30T15:00:00Z", phone: "3125551234", price: "70.50", status: "SCHEDULED" }],
+    });
+    await clickButton(container, "Mock event click");
+    await waitFor(() => container.textContent?.includes("Update appointment") ?? false);
+    await clickButton(container, "45");
+    await setControlValue(findControlInLabel(container, "Price") as HTMLInputElement, "70");
+    await clickButton(container, "Update appointment");
+    await waitFor(() => fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH"));
+    const patchCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PATCH");
+    const payload = JSON.parse(String(patchCall?.[1]?.body));
+    expect(payload.price).toBe("70");
+    expect(new Date(payload.endAt).getTime() - new Date(payload.startAt).getTime()).toBe(45 * 60000);
+    await cleanupRender(root, container);
+  });
+
+  it.each(["70.00", "70.50"])("rejects newly entered fractional price %s", async (price) => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
+    await clickButton(container, "Mock event click");
+    await waitFor(() => container.textContent?.includes("Update appointment") ?? false);
+    await setControlValue(findControlInLabel(container, "Price") as HTMLInputElement, price);
+    await clickButton(container, "Update appointment");
+    expect(container.textContent).toContain("Price must be a non-negative whole USD amount");
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
     await cleanupRender(root, container);
   });
 

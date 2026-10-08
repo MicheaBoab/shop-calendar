@@ -43,7 +43,7 @@ export class CreateAppointmentDto {
 
   @IsString()
   @IsOptional()
-  @Matches(/^\d+(\.\d{2})$/)
+  @Matches(/^\d+$/, { message: 'price must be a non-negative whole USD amount' })
   price?: string;
 
   @IsString()
