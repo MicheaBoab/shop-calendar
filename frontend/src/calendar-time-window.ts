@@ -7,6 +7,13 @@ export type CalendarWindowSettings = {
 	slotMaxTime: string;
 };
 
+// Background presentation only; never use padded display bounds as business hours.
+export const deriveCalendarBusinessHours = (settings: CalendarWindowSettings) => ({
+	daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+	startTime: settings.slotMinTime,
+	endTime: settings.slotMaxTime,
+});
+
 // Display-only bounds; 24:00 is a FullCalendar sentinel, never a business/input time.
 export const deriveCalendarDisplayWindow = (
 	settings: CalendarWindowSettings,

@@ -10,6 +10,15 @@ import { ShopScopedPrismaClient } from '../common/prisma/prisma.module';
 import { shopContextStorage } from '../common/shop-context/shop-context';
 import { StaffColorsService } from '../staff-colors/staff-colors.service';
 import { UsersService } from './users.service';
+import { AppointmentsService } from '../appointments/appointments.service';
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
 
 describe('user removal cross-shop transaction (memory, not a DB atomicity proof)', () => {
   const now = new Date();
@@ -45,6 +54,8 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
   const transaction = jest.fn();
   const record = jest.fn();
   let service: UsersService;
+  let beforeWriteLock: (() => Promise<void>) | undefined;
+  let enumerations: number;
   const remove = (id = user.id) =>
     shopContextStorage.run(
       { shopId: 'shop-a', userId: 'admin', role: UserRole.ADMIN },
@@ -54,6 +65,8 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
   beforeEach(() => {
     jest.clearAllMocks();
     missingShop = undefined;
+    beforeWriteLock = undefined;
+    enumerations = 0;
     state = {
       user: { ...user },
       appointments: [
@@ -130,8 +143,11 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
               });
               return { id: `pending-${where.shopId}` };
             },
-            update: (args: Prisma.UserUpdateArgs) => {
+            update: async (args: Prisma.UserUpdateArgs) => {
               expect(args.where).toEqual({ id: user.id, shopId: 'shop-a' });
+              await beforeWriteLock?.();
+              // Model a fresh READ COMMITTED statement snapshot after waiting.
+              staged.appointments = structuredClone(state.appointments);
               staged.user = {
                 ...staged.user,
                 status: UserStatus.INACTIVE,
@@ -142,6 +158,7 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
           },
           appointment: {
             findMany: (args: Prisma.AppointmentFindManyArgs) => {
+              enumerations++;
               expect(args).toEqual({
                 where: {
                   employeeId: user.id,
@@ -284,6 +301,97 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
     await remove();
     expect(updateMany).toHaveBeenCalledTimes(1);
     expect(state.appointments[1].employeeId).toBe(user.id);
+  });
+
+  it('waits for the eligibility share-lock holder to commit a new shop before enumerating', async () => {
+    const waiting = deferred();
+    const assignmentCommitted = deferred();
+    const query = jest.fn((sql: TemplateStringsArray, ...values: unknown[]) => {
+      expect(sql.join('')).toContain('FOR SHARE');
+      expect(values).toEqual([user.id, 'shop-c']);
+      return Promise.resolve([state.user]);
+    });
+    const appointments = new AppointmentsService(
+      {} as ConstructorParameters<typeof AppointmentsService>[0],
+      {} as ConstructorParameters<typeof AppointmentsService>[1],
+      {} as ConstructorParameters<typeof AppointmentsService>[2],
+      {
+        get: () => Promise.resolve('#60a5fa'),
+      } as unknown as StaffColorsService,
+    );
+    // The creation transaction has qualified the manager and retains its
+    // share lock until its later assignment commit.
+    await shopContextStorage.run(
+      { shopId: 'shop-c', userId: 'admin', role: UserRole.ADMIN },
+      () =>
+        appointments['getEmployeeSnapshot'](user.id, {
+          $queryRaw: query,
+        } as unknown as Prisma.TransactionClient),
+    );
+    beforeWriteLock = async () => {
+      waiting.resolve();
+      await assignmentCommitted.promise;
+    };
+    const removal = remove();
+    await waiting.promise;
+    expect(enumerations).toBe(0);
+    expect(updateMany).not.toHaveBeenCalled();
+    // READ COMMITTED's next statement sees the assignment committed while
+    // UPDATE waited. An eager shop snapshot would omit this store.
+    const concurrent = appointment('concurrent', 'shop-c');
+    state.appointments.push(concurrent);
+    assignmentCommitted.resolve();
+    await removal;
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(
+      state.appointments.find((row) => row.id === 'concurrent')?.employeeId,
+    ).toBe('pending-shop-c');
+    expect(state.audits).toContainEqual({
+      shopId: 'shop-c',
+      actorUserId: 'admin',
+    });
+  });
+
+  it('a qualification read waiting behind deletion sees the new inactive state', async () => {
+    const locked = deferred();
+    const finishDelete = deferred();
+    beforeWriteLock = async () => {
+      locked.resolve();
+      await finishDelete.promise;
+    };
+    const removal = remove();
+    await locked.promise;
+    const query = jest.fn(
+      async (sql: TemplateStringsArray, ...values: unknown[]) => {
+        expect(sql.join('')).toContain('FOR SHARE');
+        expect(sql.join('')).toContain("status::text = 'active'");
+        expect(sql.join('')).toContain('deleted_at IS NULL');
+        expect(values).toEqual([user.id, 'shop-a']);
+        await removal;
+        return state.user.status === UserStatus.ACTIVE && !state.user.deletedAt
+          ? [state.user]
+          : [];
+      },
+    );
+    const appointments = new AppointmentsService(
+      {} as ConstructorParameters<typeof AppointmentsService>[0],
+      {} as ConstructorParameters<typeof AppointmentsService>[1],
+      {} as ConstructorParameters<typeof AppointmentsService>[2],
+      {} as StaffColorsService,
+    );
+    const qualification = shopContextStorage.run(
+      { shopId: 'shop-a', userId: 'admin', role: UserRole.ADMIN },
+      () =>
+        appointments['getEmployeeSnapshot'](user.id, {
+          $queryRaw: query,
+        } as unknown as Prisma.TransactionClient),
+    );
+    const rejected = expect(qualification).rejects.toThrow(
+      'Selected service staff must be active and eligible',
+    );
+    finishDelete.resolve();
+    await rejected;
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it('cannot delete another shop account, the pending system account or self', async () => {

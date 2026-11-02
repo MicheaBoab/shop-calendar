@@ -6,7 +6,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { Appointment, AppointmentStatus, Prisma, UserRole } from '@prisma/client';
+import {
+  Appointment,
+  AppointmentStatus,
+  Prisma,
+  UserRole,
+} from '@prisma/client';
 import { SHOP_SCOPED_PRISMA } from '../common/prisma/prisma.module';
 import type { ShopScopedPrismaClient } from '../common/prisma/prisma.module';
 import { requireCurrentShopId } from '../common/shop-context/shop-context';
@@ -469,6 +474,19 @@ export class AppointmentsService {
         };
         const records: Appointment[] = [];
 
+        // Acquire new staff eligibility locks before touching retained or
+        // removed appointment rows: removal also locks user before appointment.
+        const addedSnapshots = new Map<
+          string,
+          Awaited<ReturnType<AppointmentsService['getEmployeeSnapshot']>>
+        >();
+        for (const employeeId of [...addRealEmployeeIds].sort()) {
+          addedSnapshots.set(
+            employeeId,
+            await this.getEmployeeSnapshot(employeeId, tx),
+          );
+        }
+
         for (const member of keepReal) {
           await this.assertNoTimeConflict(
             member.employeeId,
@@ -512,7 +530,7 @@ export class AppointmentsService {
             undefined,
             tx,
           );
-          const snapshot = await this.getEmployeeSnapshot(employeeId, tx);
+          const snapshot = addedSnapshots.get(employeeId)!;
           records.push(
             await tx.appointment.create({
               data: {

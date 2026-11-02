@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CALENDAR_SLOT_MAX_TIME,
   CALENDAR_SLOT_MIN_TIME,
+  deriveCalendarBusinessHours,
   deriveCalendarDisplayWindow,
   isCalendarStartWithinBusinessHours,
   isValidCalendarWindowRange,
@@ -22,6 +23,9 @@ describe('calendar time window', () => {
   it('uses the default 10–20 business window and pads its display to 08–22', () => {
     const defaults = normalizeCalendarWindowSettings();
     expect(defaults).toEqual({ slotMinTime: '10:00:00', slotMaxTime: '20:00:00' });
+    expect(deriveCalendarBusinessHours(defaults)).toEqual({
+      daysOfWeek: [0, 1, 2, 3, 4, 5, 6], startTime: '10:00:00', endTime: '20:00:00',
+    });
     expect(deriveCalendarDisplayWindow(defaults)).toEqual({
       slotMinTime: '08:00:00',
       slotMaxTime: '22:00:00',
@@ -86,6 +90,9 @@ describe('calendar time window', () => {
     expect(deriveCalendarDisplayWindow({ slotMinTime: start, slotMaxTime: end })).toEqual({
       slotMinTime: displayStart,
       slotMaxTime: displayEnd,
+    });
+    expect(deriveCalendarBusinessHours({ slotMinTime: start, slotMaxTime: end })).toEqual({
+      daysOfWeek: [0, 1, 2, 3, 4, 5, 6], startTime: start, endTime: end,
     });
   });
 

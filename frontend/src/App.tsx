@@ -28,6 +28,7 @@ import {
 import {
   CALENDAR_SLOT_MAX_TIME,
   CALENDAR_SLOT_MIN_TIME,
+  deriveCalendarBusinessHours,
   deriveCalendarDisplayWindow,
   isCalendarStartWithinBusinessHours,
   isValidCalendarWindowRange,
@@ -3009,6 +3010,7 @@ function App() {
                     <div className="party-size-control">
                       <input
                         type="number"
+                        inputMode="numeric"
                         min={1}
                         max={99}
                         value={form.partySize}
@@ -3394,6 +3396,7 @@ function App() {
                   )}
                   allDaySlot={false}
                   nowIndicator={true}
+                  businessHours={calendarWindowReady ? deriveCalendarBusinessHours(calendarWindow) : false}
                   slotMinTime={displayCalendarWindow.slotMinTime}
                   slotMaxTime={displayCalendarWindow.slotMaxTime}
                   slotDuration="00:30:00"

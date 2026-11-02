@@ -646,6 +646,15 @@ body.theme-dark .native-date-panel input[type="date"] { color-scheme: dark; }
 .fc .fc-timegrid-slot {
   height: 3.5em;
 }
+/* Native background layer: retain business/today/selection/event layers unchanged. */
+.fc .fc-timegrid .fc-non-business {
+  background-color: var(--bg);
+  background-image: repeating-linear-gradient(
+    135deg, transparent 0 6px, var(--text-muted) 6px 7px, transparent 7px 12px
+  );
+  opacity: 0.3;
+  pointer-events: none;
+}
 .fc .fc-col-header-cell-cushion,
 .fc .fc-timegrid-slot-label-cushion,
 .fc .fc-timegrid-axis-cushion,

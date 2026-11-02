@@ -173,6 +173,107 @@ describe("audit presentation", () => {
       noChanges,
     );
 
+  const group = (...appointments: Record<string, unknown>[]) => ({
+    groupId: "g",
+    appointments,
+  });
+  const sam = (overrides: Record<string, unknown> = {}) =>
+    appointment({
+      id: "appointment-2",
+      employeeId: "staff-2",
+      employeeDisplayName: "Sam",
+      price: "80",
+      ...overrides,
+    });
+
+  it("reports a non-first price change by appointment ID without an aggregate false positive", () => {
+    expect(
+      present(
+        group(appointment(), sam()),
+        group(appointment(), sam({ price: "70" })),
+      ).changes,
+    ).toEqual([
+      { field: "Price · Sam (appointment-2)", before: "80", after: "70" },
+    ]);
+  });
+
+  it("ignores member reordering even with heterogeneous business fields", () => {
+    const a = appointment();
+    const b = sam({ note: "different", status: "CANCELLED" });
+    expect(present(group(a, b), group(b, a)).changes).toEqual([]);
+  });
+
+  it("combines a genuinely shared change only once and canonicalizes legacy prices", () => {
+    expect(
+      present(
+        group(appointment(), sam({ price: 70 })),
+        group(appointment({ price: "80.50" }), sam({ price: 80.5 })),
+      ).changes,
+    ).toEqual([{ field: "Price", before: "70", after: "80.50" }]);
+    expect(
+      present(appointment({ price: 70.5 }), appointment({ price: "70.50" }))
+        .changes,
+    ).toEqual([]);
+  });
+
+  it("does not lose non-first time, note or status edits", () => {
+    const endAt = "2026-11-02T19:30:00.000Z";
+    expect(
+      present(
+        group(appointment(), sam()),
+        group(appointment(), sam({ endAt, note: "new", status: "CANCELLED" })),
+      ).changes,
+    ).toEqual([
+      {
+        field: "End · Sam (appointment-2)",
+        before: "local:2026-11-02T19:00:00.000Z",
+        after: `local:${endAt}`,
+      },
+      { field: "Note · Sam (appointment-2)", before: "—", after: "new" },
+      {
+        field: "Status · Sam (appointment-2)",
+        before: "Scheduled",
+        after: "Cancelled",
+      },
+    ]);
+  });
+
+  it("keeps price edits and added/removed member identity differences together", () => {
+    expect(
+      present(
+        group(appointment(), sam()),
+        group(
+          appointment({ price: "60" }),
+          sam({
+            id: "appointment-3",
+            employeeId: "staff-3",
+            employeeDisplayName: "Jo",
+          }),
+        ),
+      ).changes,
+    ).toEqual([
+      { field: "Price · Alex (appointment-1)", before: "70", after: "60" },
+      { field: "Added staff", before: "", after: "Jo" },
+      { field: "Removed staff", before: "", after: "Sam" },
+    ]);
+  });
+
+  it("does not pair legacy rows without appointment IDs or expose metadata diffs", () => {
+    const a = appointment({ id: undefined });
+    const b = sam({ id: undefined });
+    expect(present(group(a, b), group(b, a)).changes).toEqual([]);
+    expect(
+      present(group(a, b), group(a, sam({ id: undefined, price: "60" })))
+        .changes,
+    ).toEqual([{ field: "Price", before: "70, 80", after: "60, 70" }]);
+    expect(
+      present(
+        group(appointment()),
+        group(appointment({ createdAt: "changed", updatedAt: "changed" })),
+      ).changes,
+    ).toEqual([]);
+  });
+
   it("shows same-name replacement by ID in single and grouped snapshots", () => {
     const before = appointment({ employeeId: "staff-A" });
     const after = appointment({ employeeId: "staff-B" });

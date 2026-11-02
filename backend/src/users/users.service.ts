@@ -256,113 +256,119 @@ export class UsersService {
     // Deliberately non-scoped: managers can serve appointments in other shops.
     // The account lookup itself remains restricted to the administrator's shop.
     const { removed, resolvedColor } =
-      await this.basePrismaService.$transaction(async (tx) => {
-        const before = await tx.user.findFirst({
-          where: { id, shopId, deletedAt: null },
-        });
-        if (!before) throw new NotFoundException('User not found');
-        if (isPendingAssignmentEmployeeUsername(before.username)) {
-          throw new BadRequestException(
-            'Pending assignment account cannot be removed.',
-          );
-        }
-        const resolvedColor = await this.staffColors.get(before, shopId, tx);
-        const now = new Date();
-        const futureWhere = {
-          employeeId: id,
-          status: AppointmentStatus.SCHEDULED,
-          deletedAt: null,
-          startAt: { gt: now },
-        };
-        const affectedShops =
-          before.role === UserRole.MANAGER
-            ? await tx.appointment.findMany({
-                where: futureWhere,
-                distinct: ['shopId'],
-                select: { shopId: true },
-                orderBy: { shopId: 'asc' },
-              })
-            : [{ shopId }];
-        const after = await tx.user.update({
-          where: { id, shopId },
-          data: {
-            status: UserStatus.INACTIVE,
-            deletedAt: now,
-          },
-          select: {
-            id: true,
-            username: true,
-            displayName: true,
-            role: true,
-            status: true,
-            createdAt: true,
-            updatedAt: true,
-            deletedAt: true,
-          },
-        });
-        for (const affected of affectedShops) {
-          const targetShopId = affected.shopId;
-          const pendingEmployee = await tx.user.findFirst({
-            where: {
-              shopId: targetShopId,
-              username:
-                getPendingAssignmentEmployeeUsernameForShop(targetShopId),
-              role: UserRole.EMPLOYEE,
-              status: UserStatus.ACTIVE,
-              deletedAt: null,
-            },
-            select: { id: true },
+      await this.basePrismaService.$transaction(
+        async (tx) => {
+          const before = await tx.user.findFirst({
+            where: { id, shopId, deletedAt: null },
           });
-          if (!pendingEmployee) {
+          if (!before) throw new NotFoundException('User not found');
+          if (isPendingAssignmentEmployeeUsername(before.username)) {
             throw new BadRequestException(
-              `Pending assignment employee missing for shop ${targetShopId}`,
+              'Pending assignment account cannot be removed.',
             );
           }
-          const result = await tx.appointment.updateMany({
-            where: { ...futureWhere, shopId: targetShopId },
+          const resolvedColor = await this.staffColors.get(before, shopId, tx);
+          const now = new Date();
+          const futureWhere = {
+            employeeId: id,
+            status: AppointmentStatus.SCHEDULED,
+            deletedAt: null,
+            startAt: { gt: now },
+          };
+          // UPDATE takes a row write lock conflicting with eligibility FOR SHARE.
+          // Wait for earlier assignments to commit BEFORE taking the shop snapshot.
+          // Later eligibility reads then see the inactive/deleted account.
+          const after = await tx.user.update({
+            where: { id, shopId },
             data: {
-              employeeId: pendingEmployee.id,
-              // Preserve the removed employee's historical snapshot; the UI
-              // resolves pending name/color from the current employeeId first.
-              employeeDisplayName: before.displayName ?? before.username,
-              employeeColor: resolvedColor,
+              status: UserStatus.INACTIVE,
+              deletedAt: now,
+            },
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              role: true,
+              status: true,
+              createdAt: true,
+              updatedAt: true,
+              deletedAt: true,
             },
           });
-          if (targetShopId !== shopId) {
-            const shop = await tx.shop.findUnique({
-              where: { id: targetShopId },
-              select: { id: true, name: true },
-            });
-            if (!shop) throw new NotFoundException('Shop not found');
-            await this.auditService.recordUserManagementChange(
-              {
-                actorUserId,
-                action: 'user.remove',
-                entityId: id,
-                beforePayload: this.toAuditPayload(before),
-                afterPayload: {
-                  ...this.toAuditPayload(after),
-                  reassignedAppointments: result.count,
-                },
+          const affectedShops =
+            before.role === UserRole.MANAGER
+              ? await tx.appointment.findMany({
+                  where: futureWhere,
+                  distinct: ['shopId'],
+                  select: { shopId: true },
+                  orderBy: { shopId: 'asc' },
+                })
+              : [{ shopId }];
+          for (const affected of affectedShops) {
+            const targetShopId = affected.shopId;
+            const pendingEmployee = await tx.user.findFirst({
+              where: {
+                shopId: targetShopId,
+                username:
+                  getPendingAssignmentEmployeeUsernameForShop(targetShopId),
+                role: UserRole.EMPLOYEE,
+                status: UserStatus.ACTIVE,
+                deletedAt: null,
               },
-              { ...auditContext, shopId: targetShopId, shopSnapshot: shop },
-              tx,
-            );
+              select: { id: true },
+            });
+            if (!pendingEmployee) {
+              throw new BadRequestException(
+                `Pending assignment employee missing for shop ${targetShopId}`,
+              );
+            }
+            const result = await tx.appointment.updateMany({
+              where: { ...futureWhere, shopId: targetShopId },
+              data: {
+                employeeId: pendingEmployee.id,
+                // Preserve the removed employee's historical snapshot; the UI
+                // resolves pending name/color from the current employeeId first.
+                employeeDisplayName: before.displayName ?? before.username,
+                employeeColor: resolvedColor,
+              },
+            });
+            if (targetShopId !== shopId) {
+              const shop = await tx.shop.findUnique({
+                where: { id: targetShopId },
+                select: { id: true, name: true },
+              });
+              if (!shop) throw new NotFoundException('Shop not found');
+              await this.auditService.recordUserManagementChange(
+                {
+                  actorUserId,
+                  action: 'user.remove',
+                  entityId: id,
+                  beforePayload: this.toAuditPayload(before),
+                  afterPayload: {
+                    ...this.toAuditPayload(after),
+                    reassignedAppointments: result.count,
+                  },
+                },
+                { ...auditContext, shopId: targetShopId, shopSnapshot: shop },
+                tx,
+              );
+            }
           }
-        }
-        await this.auditService.recordUserManagementChange(
-          {
-            actorUserId,
-            action: 'user.remove',
-            entityId: after.id,
-            beforePayload: this.toAuditPayload(before),
-            afterPayload: this.toAuditPayload(after),
-          },
-          auditContext,
-          tx,
-        );
-        return { removed: after, resolvedColor };
-      });
+          await this.auditService.recordUserManagementChange(
+            {
+              actorUserId,
+              action: 'user.remove',
+              entityId: after.id,
+              beforePayload: this.toAuditPayload(before),
+              afterPayload: this.toAuditPayload(after),
+            },
+            auditContext,
+            tx,
+          );
+          return { removed: after, resolvedColor };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      );
     return { ...removed, color: resolvedColor };
   }
 

@@ -119,6 +119,25 @@ const settingsValues = (value: JsonRecord): JsonRecord => ({
 const equalValue = (left: unknown, right: unknown) =>
   JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 
+const businessFields = new Set([
+  "startAt",
+  "endAt",
+  "phone",
+  "price",
+  "customerName",
+  "serviceName",
+  "note",
+  "status",
+]);
+
+const canonicalValue = (key: string, value: unknown) =>
+  key === "price" &&
+  (typeof value === "number" ||
+    (typeof value === "string" && /^\d+(\.\d+)?$/.test(value))) &&
+  Number.isFinite(Number(value))
+    ? Number(value)
+    : value;
+
 export function getAuditPresentation(
   beforePayload: unknown,
   afterPayload: unknown,
@@ -279,8 +298,7 @@ export function getAuditPresentation(
           afterMembers.filter((member) => renamedIds.has(member.id)),
         ).join(", ")
       : afterValues?.[key];
-    if (!afterValues || (beforeValues && equalValue(previous, next))) return [];
-    if (previous === undefined && next === undefined) return [];
+    if (!afterValues) return [];
     const format = (value: unknown) => {
       const text = safeText(value);
       if ((key === "startAt" || key === "endAt") && text && text !== "—") {
@@ -327,6 +345,85 @@ export function getAuditPresentation(
       }
       return text;
     };
+    if (
+      businessFields.has(key) &&
+      ((before && isAppointmentGroup(before)) ||
+        (after && isAppointmentGroup(after)))
+    ) {
+      const rows = (payload: JsonRecord | null) =>
+        payload
+          ? Array.isArray(payload.appointments)
+            ? payload.appointments.filter(isRecord)
+            : [payload]
+          : [];
+      const oldRows = rows(before);
+      const newRows = rows(after);
+      const same = (left: unknown, right: unknown) =>
+        equalValue(canonicalValue(key, left), canonicalValue(key, right));
+      const uniform = (members: JsonRecord[]) =>
+        members.length > 0 &&
+        members.every((row) => same(row[key], members[0][key]));
+      if ((!before || uniform(oldRows)) && uniform(newRows)) {
+        const oldValue = oldRows[0]?.[key];
+        const newValue = newRows[0]?.[key];
+        if (before && same(oldValue, newValue)) return [];
+        if (oldValue === undefined && newValue === undefined) return [];
+        return [
+          {
+            field: labels[key],
+            before: before ? format(oldValue) : "",
+            after: format(newValue),
+          },
+        ];
+      }
+      const hasStableIds = (members: JsonRecord[]) =>
+        members.every((row) => typeof row.id === "string" && row.id) &&
+        new Set(members.map((row) => row.id)).size === members.length;
+      if (!hasStableIds(oldRows) || !hasStableIds(newRows)) {
+        // Legacy rows cannot be paired by array position or guessed identity.
+        const values = (members: JsonRecord[]) =>
+          [
+            ...new Set(
+              members.map((row) => format(canonicalValue(key, row[key]))),
+            ),
+          ]
+            .sort()
+            .join(", ");
+        const oldText = values(oldRows);
+        const newText = values(newRows);
+        return oldText === newText
+          ? []
+          : [{ field: labels[key], before: oldText, after: newText }];
+      }
+      const oldById = new Map(oldRows.map((row) => [row.id, row]));
+      return [...newRows]
+        .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+        .flatMap((row) => {
+          const oldRow = oldById.get(row.id);
+          // Membership changes have their own entries; do not invent old values.
+          if (before && !oldRow) return [];
+          if (oldRow && same(oldRow[key], row[key])) return [];
+          if (oldRow?.[key] === undefined && row[key] === undefined) return [];
+          const name = memberLabel({
+            id: safeText(row.employeeId),
+            name: safeText(row.employeeDisplayName),
+            key: `id:${safeText(row.employeeId)}`,
+          });
+          return [
+            {
+              field: `${labels[key]} · ${name} (${safeText(row.id)})`,
+              before: oldRow ? format(oldRow[key]) : "",
+              after: format(row[key]),
+            },
+          ];
+        });
+    }
+    if (
+      (beforeValues &&
+        equalValue(canonicalValue(key, previous), canonicalValue(key, next))) ||
+      (previous === undefined && next === undefined)
+    )
+      return [];
     return [
       {
         field: labels[key],

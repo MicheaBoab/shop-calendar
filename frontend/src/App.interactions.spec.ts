@@ -1678,13 +1678,19 @@ describe("App interaction seams", () => {
     const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
     await clickButton(container, "Mock date click");
     const startTimeInput = findControlInLabel(container, "Start time") as HTMLInputElement;
+    expect(startTimeInput.type).toBe("text");
+    expect(startTimeInput.inputMode).toBe("numeric");
+    await act(async () => startTimeInput.focus());
     await setControlValue(startTimeInput, String(digits));
     expect(startTimeInput.value).toBe(digits);
+    expect(startTimeInput.validity.patternMismatch).toBe(false);
 
     await act(async () => {
       startTimeInput.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     });
     expect(startTimeInput.value).toBe(normalized);
+    expect(startTimeInput.validity.patternMismatch).toBe(false);
+    expect(startTimeInput.checkValidity()).toBe(true);
     expect(startTimeInput.hasAttribute("aria-invalid")).toBe(false);
 
     await setControlValue(findControlInLabel(container, "Phone") as HTMLInputElement, "3125551234");
@@ -1874,6 +1880,40 @@ describe("App interaction seams", () => {
     await cleanupRender(root, container);
   });
 
+  it("wires seven-day real business backgrounds in both views and updates them after saving", async () => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280, {
+      calendarWindow: { slotMinTime: "10:00:00", slotMaxTime: "20:00:00" },
+    });
+    const props = () => calendarPropsSpy.mock.calls.slice(-1)[0][0];
+    const assertHours = (start: string, end: string, min: string, max: string) => {
+      expect(props().businessHours).toEqual({ daysOfWeek: [0, 1, 2, 3, 4, 5, 6], startTime: start, endTime: end });
+      expect([props().slotMinTime, props().slotMaxTime]).toEqual([min, max]);
+      for (const key of ["eventConstraint", "selectConstraint", "eventAllow"]) expect(props()[key]).toBeUndefined();
+    };
+    try {
+      assertHours("10:00:00", "20:00:00", "08:00:00", "22:00:00");
+      await clickButton(container, "Day");
+      assertHours("10:00:00", "20:00:00", "08:00:00", "22:00:00");
+      await clickButton(container, "3-day");
+      assertHours("10:00:00", "20:00:00", "08:00:00", "22:00:00");
+      await clickButton(container, "Admin");
+      const originalFetch = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation((input, init) => {
+        if (String(input).includes("/system-settings/calendar-window") && init?.method === "PATCH") {
+          return Promise.resolve(new Response(String(init.body), { status: 200 }));
+        }
+        return originalFetch(input, init);
+      });
+      await setControlValue(findControlInLabel(container, "Opening time") as HTMLInputElement, "00:30");
+      await setControlValue(findControlInLabel(container, "Closing time") as HTMLInputElement, "23:30");
+      await clickButton(container, "Save business hours");
+      await clickButton(container, "Calendar");
+      assertHours("00:30:00", "23:30:00", "00:00:00", "24:00:00");
+      await clickButton(container, "Day");
+      assertHours("00:30:00", "23:30:00", "00:00:00", "24:00:00");
+    } finally { await cleanupRender(root, container); }
+  });
+
   it("shows business-hours labels and help in Chinese", async () => {
     localStorage.setItem("shop-calendar-locale", "zh-CN");
     const { container, root } = await renderAndLogin("ADMIN", 1280);
@@ -1926,6 +1966,7 @@ describe("App interaction seams", () => {
     const recoveredWindowRead = vi.fn();
     try {
       await waitFor(() => Boolean(container.querySelector(".read-recovery-banner")));
+      expect(calendarPropsSpy.mock.calls.slice(-1)[0][0].businessHours).toBe(false);
       fetchMock.mockImplementation((input, init) => {
         if (String(input).includes("/system-settings/calendar-window")) {
           recoveredWindowRead();
@@ -1943,6 +1984,9 @@ describe("App interaction seams", () => {
       appointmentStart.setDate(appointmentStart.getDate() + 1);
       appointmentStart.setHours(14, 30, 0, 0);
       const calendarProps = calendarPropsSpy.mock.calls.slice(-1)[0]?.[0];
+      expect(calendarProps.businessHours).toEqual({
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6], startTime: "08:00:00", endTime: "20:00:00",
+      });
       await act(async () => calendarProps.dateClick({ date: appointmentStart }));
       expect(container.querySelector('dialog[open]')).toBeNull();
       expect((findControlInLabel(container, "Start time") as HTMLInputElement).value).toBe("2:30");
@@ -2020,8 +2064,11 @@ describe("App interaction seams", () => {
     for (let i = 0; i < 3; i++) {
       await act(async () => startTimeInput.focus());
       expect(startTimeInput.value).toBe("930");
+      expect(startTimeInput.inputMode).toBe("numeric");
+      expect(startTimeInput.validity.patternMismatch).toBe(false);
       await act(async () => startTimeInput.blur());
       expect(startTimeInput.value).toBe("9:30");
+      expect(startTimeInput.checkValidity()).toBe(true);
       expect(container.querySelector("#start-time-error")).toBeNull();
     }
 
@@ -2730,6 +2777,8 @@ describe("App employee selection checkbox behavior", () => {
       const input = findControlInLabel(container, "Party size") as HTMLInputElement;
       expect(container.querySelector(".party-size-control button")).toBeNull();
       expect(input.type).toBe("number");
+      expect(input.inputMode).toBe("numeric");
+      expect(input.hasAttribute("pattern")).toBe(false);
       expect([input.min, input.max]).toEqual(["1", "99"]);
       expect(appStylesheet).toMatch(/\.party-size-control input\s*\{[^}]*appearance: textfield/s);
       expect(appStylesheet).toMatch(/\.party-size-control input::-webkit-inner-spin-button,\s*\.party-size-control input::-webkit-outer-spin-button\s*\{[^}]*-webkit-appearance: none/s);
