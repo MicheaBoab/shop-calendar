@@ -23,6 +23,34 @@ const appointment = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("audit presentation", () => {
+  it.each(["en", "zh-CN"] as const)(
+    "shows global manager scope and home/execution shops in %s",
+    (locale) => {
+      const payload = {
+        username: "manager",
+        role: "MANAGER",
+        status: "ACTIVE",
+        managementScope: "global",
+        homeShopId: "shop-a",
+        operationShopId: "shop-b",
+      };
+      const result = getAuditPresentation(
+        payload,
+        payload,
+        "user",
+        locale,
+        formatDate,
+        missing,
+        noChanges,
+      );
+      expect(result.summary[0]).toContain("shop-a");
+      expect(result.summary[0]).toContain("shop-b");
+      expect(result.summary[0]).toContain(
+        locale === "en" ? "all shops" : "全店生效",
+      );
+    },
+  );
+
   it("summarizes created appointments with readable service data", () => {
     const result = getAuditPresentation(
       null,

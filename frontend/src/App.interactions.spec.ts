@@ -2592,6 +2592,148 @@ describe("App interaction seams", () => {
     await cleanupRender(root, container);
   });
 
+  it("separates shared managers in management and reset options without changing creation or service options", async () => {
+    const users = [
+      {
+        id: "admin-1",
+        username: "admin",
+        displayName: "Admin",
+        role: "ADMIN",
+        status: "ACTIVE",
+      },
+      {
+        id: "emp-1",
+        username: "anna",
+        displayName: "Anna",
+        role: "EMPLOYEE",
+        status: "ACTIVE",
+      },
+      {
+        id: "shared",
+        username: "shop",
+        displayName: "Shared",
+        role: "SHOP_ACCOUNT",
+        status: "ACTIVE",
+      },
+      {
+        id: "manager-a",
+        username: "alex",
+        displayName: "Alex",
+        role: "MANAGER",
+        status: "ACTIVE",
+      },
+      {
+        id: "manager-inactive",
+        username: "inactive",
+        displayName: "Inactive manager",
+        role: "MANAGER",
+        status: "INACTIVE",
+      },
+      {
+        id: "pending",
+        username: "pending_assignment__shop-1",
+        displayName: "Pending",
+        role: "EMPLOYEE",
+        status: "ACTIVE",
+      },
+    ];
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280, {
+      users,
+    });
+    await clickButton(container, "Admin");
+    const group = container.querySelector(
+      '[role="group"][aria-label="Managers (all shops)"]',
+    );
+    expect(group?.querySelectorAll(".user-item")).toHaveLength(2);
+    expect(group?.textContent).toContain("apply to all shops");
+    expect(
+      Array.from(container.querySelectorAll(".user-item strong")).map(
+        (node) => node.textContent,
+      ),
+    ).toEqual(["Anna", "Shared", "Alex", "Inactive manager"]);
+    const target = container.querySelector(
+      'select[name="targetUserId"]',
+    ) as HTMLSelectElement;
+    expect(
+      Array.from(target.querySelectorAll("optgroup option")).map(
+        (option) => (option as HTMLOptionElement).value,
+      ),
+    ).toEqual(["manager-a", "manager-inactive"]);
+    expect(
+      Array.from(target.options).filter((option) => option.value === "manager-a"),
+    ).toHaveLength(1);
+    expect(
+      Array.from(target.options).some((option) => option.value === "pending"),
+    ).toBe(false);
+    expect(
+      Array.from(target.options).some((option) => option.value === "admin-1"),
+    ).toBe(true);
+    const roleSelect = container.querySelector(
+      'select[name="role"]',
+    ) as HTMLSelectElement;
+    expect(Array.from(roleSelect.options).map((option) => option.value)).toEqual([
+      "EMPLOYEE",
+      "MANAGER",
+      "SHOP_ACCOUNT",
+    ]);
+    await setControlValue(target, "manager-a");
+    const resetForm = target.closest("form")!;
+    await setControlValue(
+      resetForm.querySelector('[name="newPassword"]') as HTMLInputElement,
+      "new-password",
+    );
+    await setControlValue(
+      resetForm.querySelector('[name="confirmPassword"]') as HTMLInputElement,
+      "new-password",
+    );
+    await act(async () => {
+      resetForm.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+    });
+    await flush();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith("/users/manager-a/password") &&
+          init?.method === "PATCH",
+      ),
+    ).toBe(true);
+    const enable = Array.from(group?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Enable",
+    )!;
+    await act(async () => {
+      enable.click();
+    });
+    await flush();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith("/users/manager-inactive/status") &&
+          init?.method === "PATCH",
+      ),
+    ).toBe(true);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const remove = Array.from(group?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Remove",
+    )!;
+    await act(async () => {
+      remove.click();
+    });
+    await flush();
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining("apply to all shops"),
+    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).endsWith("/users/manager-a") && init?.method === "DELETE",
+      ),
+    ).toBe(true);
+    confirm.mockRestore();
+    await cleanupRender(root, container);
+  });
+
   it("lets admins choose a manager when creating a user", async () => {
     const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
 

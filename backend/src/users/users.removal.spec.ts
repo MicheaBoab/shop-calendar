@@ -52,13 +52,17 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
   let missingShop: string | undefined;
   const updateMany = jest.fn();
   const transaction = jest.fn();
-  const record = jest.fn();
+  const record = jest.fn<
+    void,
+    Parameters<AuditService['recordUserManagementChange']>
+  >();
   let service: UsersService;
   let beforeWriteLock: (() => Promise<void>) | undefined;
   let enumerations: number;
+  let operationShop: string;
   const remove = (id = user.id) =>
     shopContextStorage.run(
-      { shopId: 'shop-a', userId: 'admin', role: UserRole.ADMIN },
+      { shopId: operationShop, userId: 'admin', role: UserRole.ADMIN },
       () => service.removeUser(id, 'admin'),
     );
 
@@ -67,6 +71,7 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
     missingShop = undefined;
     beforeWriteLock = undefined;
     enumerations = 0;
+    operationShop = 'shop-a';
     state = {
       user: { ...user },
       appointments: [
@@ -126,7 +131,11 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
               const where = args.where;
               if (where?.id) {
                 return where.id === staged.user.id &&
-                  where.shopId === staged.user.shopId &&
+                  where.OR?.some(
+                    (condition) =>
+                      condition.shopId === staged.user.shopId ||
+                      condition.role === staged.user.role,
+                  ) &&
                   !staged.user.deletedAt
                   ? staged.user
                   : null;
@@ -144,7 +153,7 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
               return { id: `pending-${where.shopId}` };
             },
             update: async (args: Prisma.UserUpdateArgs) => {
-              expect(args.where).toEqual({ id: user.id, shopId: 'shop-a' });
+              expect(args.where).toEqual({ id: user.id });
               await beforeWriteLock?.();
               // Model a fresh READ COMMITTED statement snapshot after waiting.
               staged.appointments = structuredClone(state.appointments);
@@ -230,9 +239,9 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
       createAuditContext: () =>
         Promise.resolve({
           actorUserId: 'admin',
-          shopId: 'shop-a',
+          shopId: operationShop,
           actorSnapshot: { id: 'admin', role: UserRole.ADMIN },
-          shopSnapshot: { id: 'shop-a', name: 'shop-a' },
+          shopSnapshot: { id: operationShop, name: operationShop },
         }),
       recordUserManagementChange: record,
     };
@@ -286,6 +295,7 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
   });
 
   it('second-shop pending failure rejects the single transaction without committing earlier writes', async () => {
+    operationShop = 'shop-b';
     missingShop = 'shop-b';
     const before = structuredClone(state);
     await expect(remove()).rejects.toThrow(
@@ -396,6 +406,7 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
 
   it('cannot delete another shop account, the pending system account or self', async () => {
     state.user.shopId = 'shop-b';
+    state.user.role = UserRole.EMPLOYEE;
     await expect(remove()).rejects.toThrow('User not found');
     state.user.shopId = 'shop-a';
     state.user.username = 'pending_assignment__shop-a';
@@ -406,5 +417,36 @@ describe('user removal cross-shop transaction (memory, not a DB atomicity proof)
       'User cannot remove their own account',
     );
     expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('removes the same global manager from a non-home shop, preserving home and snapshots', async () => {
+    operationShop = 'shop-b';
+    const history = structuredClone(state.appointments.slice(2));
+    await remove();
+    expect(state.user.id).toBe(user.id);
+    expect(state.user.shopId).toBe('shop-a');
+    expect(state.appointments.slice(0, 2).map((row) => row.employeeId)).toEqual(
+      ['pending-shop-a', 'pending-shop-b'],
+    );
+    expect(state.appointments.slice(2)).toEqual(history);
+    expect(state.audits).toEqual([
+      { shopId: 'shop-a', actorUserId: 'admin' },
+      { shopId: 'shop-b', actorUserId: 'admin' },
+    ]);
+    expect(record.mock.calls[0][0].afterPayload).toEqual(
+      expect.objectContaining({
+        managementScope: 'global',
+        homeShopId: 'shop-a',
+        operationShopId: 'shop-b',
+      }),
+    );
+  });
+
+  it('rejects a deleted global manager without writes', async () => {
+    operationShop = 'shop-b';
+    state.user.deletedAt = now;
+    await expect(remove()).rejects.toThrow('User not found');
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
   });
 });

@@ -2126,7 +2126,10 @@ function App() {
     if (!auth || !isAdminRole(auth.user.role)) {
       return;
     }
-    const confirmed = window.confirm(t('confirm.removeUser', { displayName: user.displayName }));
+    const confirmed = window.confirm([
+      t('confirm.removeUser', { displayName: user.displayName }),
+      ...(isManagerRole(user.role) ? [t('admin.globalManagerHint')] : []),
+    ].join('\n'));
     if (!confirmed) {
       setNotice(t('notices.actionCancelled'), 'info');
       return;
@@ -3684,10 +3687,17 @@ function App() {
                 >
                   <option value="">{t('admin.selectUser')}</option>
                   {passwordResetUsers.map((user) => (
+                    !isManagerRole(user.role) &&
                     <option key={user.id} value={user.id}>{user.displayName} ({user.username})</option>
                   ))}
+                  <optgroup label={t('admin.globalManagers')}>
+                    {passwordResetUsers.filter((user) => isManagerRole(user.role)).map((user) => (
+                      <option key={user.id} value={user.id}>{user.displayName} ({user.username})</option>
+                    ))}
+                  </optgroup>
                 </select>
               </label>
+              <p className="hint">{t('admin.globalManagerHint')}</p>
               <label>
                 {t('admin.newPassword')}
                 <input name="newPassword" type="password" minLength={6} required />
@@ -3702,27 +3712,33 @@ function App() {
             </form>
           </div>
 
-          <div className="user-list">
-            {manageableUsers.map((user) => (
-              <div key={user.id} className="user-item">
-                <div>
-                  <strong>{user.displayName}</strong>
-                  <div>{user.username} • {ROLE_MESSAGES[user.role] ? t(ROLE_MESSAGES[user.role]) : user.role}</div>
+          {[false, true].map((managerGroup) => (
+            <div key={String(managerGroup)} className="user-list" role={managerGroup ? 'group' : undefined} aria-label={managerGroup ? t('admin.globalManagers') : undefined}>
+              {managerGroup ? <>
+                <h3>{t('admin.globalManagers')}</h3>
+                <p className="hint">{t('admin.globalManagerHint')}</p>
+              </> : null}
+              {manageableUsers.filter((user) => isManagerRole(user.role) === managerGroup).map((user) => (
+                <div key={user.id} className="user-item">
+                  <div>
+                    <strong>{user.displayName}</strong>
+                    <div>{user.username} • {ROLE_MESSAGES[user.role] ? t(ROLE_MESSAGES[user.role]) : user.role}</div>
+                  </div>
+                  <div className="user-actions">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleUserStatus(user.id, isActiveStatus(user.status) ? 'INACTIVE' : 'ACTIVE')}
+                    >
+                      {isActiveStatus(user.status) ? t('admin.disable') : t('admin.enable')}
+                    </button>
+                    {!isAdminRole(user.role) ? (
+                      <button type="button" onClick={() => void handleRemoveUser(user)}>{t('admin.remove')}</button>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="user-actions">
-                  <button
-                    type="button"
-                    onClick={() => handleToggleUserStatus(user.id, isActiveStatus(user.status) ? 'INACTIVE' : 'ACTIVE')}
-                  >
-                    {isActiveStatus(user.status) ? t('admin.disable') : t('admin.enable')}
-                  </button>
-                  {!isAdminRole(user.role) ? (
-                    <button type="button" onClick={() => void handleRemoveUser(user)}>{t('admin.remove')}</button>
-                  ) : null}
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ))}
         </section>
       ) : null}
 

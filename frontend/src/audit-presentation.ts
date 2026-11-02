@@ -464,6 +464,16 @@ export function getAuditPresentation(
       ? `${change.field}: ${change.before} → ${change.after}`
       : `${change.field}: ${change.after}`,
   );
+  const management = after ?? before;
+  if (entityType === "user" && management?.managementScope === "global") {
+    const home = safeText(management.homeShopId) || "—";
+    const operation = safeText(management.operationShopId) || "—";
+    summary.unshift(
+      locale === "zh-CN"
+        ? `经理操作全店生效；原归属店：${home}；执行店：${operation}`
+        : `Manager change applies to all shops; home shop: ${home}; execution shop: ${operation}`,
+    );
+  }
 
   return {
     legacyMissing: false,

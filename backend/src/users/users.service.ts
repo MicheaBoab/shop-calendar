@@ -35,8 +35,10 @@ export class UsersService {
   ) {}
 
   async listUsers() {
-    const users = await this.prismaService.user.findMany({
-      where: { deletedAt: null },
+    // ADMIN-only controller route. The scoped extension would hide foreign
+    // managers by appending shopId outside this explicit eligibility boundary.
+    const users = await this.basePrismaService.user.findMany({
+      where: this.managedUserWhere(),
       select: {
         id: true,
         username: true,
@@ -153,17 +155,15 @@ export class UsersService {
   ) {
     const auditContext =
       await this.auditService.createAuditContext(actorUserId);
-    const { existing, updated } = await this.prismaService.$transaction(
+    const { existing, updated } = await this.basePrismaService.$transaction(
       async (tx) => {
-        const before = await this.ensureUserExists(
-          id,
-          tx as unknown as Prisma.TransactionClient,
-        );
+        const before = await this.ensureUserExists(id, tx);
         const after = await tx.user.update({
           where: { id },
           data: { status: dto.status },
           select: {
             id: true,
+            shopId: true,
             username: true,
             displayName: true,
             role: true,
@@ -182,7 +182,7 @@ export class UsersService {
             afterPayload: this.toAuditPayload(after),
           },
           auditContext,
-          tx as unknown as Prisma.TransactionClient,
+          tx,
         );
         return { existing: before, updated: after };
       },
@@ -203,17 +203,15 @@ export class UsersService {
     const passwordHash = await bcrypt.hash(dto.newPassword, 10);
     const auditContext =
       await this.auditService.createAuditContext(actorUserId);
-    const { existing, updated } = await this.prismaService.$transaction(
+    const { existing, updated } = await this.basePrismaService.$transaction(
       async (tx) => {
-        const before = await this.ensureUserExists(
-          id,
-          tx as unknown as Prisma.TransactionClient,
-        );
+        const before = await this.ensureUserExists(id, tx);
         const after = await tx.user.update({
           where: { id },
           data: { passwordHash },
           select: {
             id: true,
+            shopId: true,
             username: true,
             displayName: true,
             role: true,
@@ -232,7 +230,7 @@ export class UsersService {
             afterPayload: this.toAuditPayload(after),
           },
           auditContext,
-          tx as unknown as Prisma.TransactionClient,
+          tx,
         );
         return { existing: before, updated: after };
       },
@@ -254,12 +252,12 @@ export class UsersService {
     const auditContext =
       await this.auditService.createAuditContext(actorUserId);
     // Deliberately non-scoped: managers can serve appointments in other shops.
-    // The account lookup itself remains restricted to the administrator's shop.
+    // Only local accounts or global managers qualify for account management.
     const { removed, resolvedColor } =
       await this.basePrismaService.$transaction(
         async (tx) => {
           const before = await tx.user.findFirst({
-            where: { id, shopId, deletedAt: null },
+            where: { id, ...this.managedUserWhere() },
           });
           if (!before) throw new NotFoundException('User not found');
           if (isPendingAssignmentEmployeeUsername(before.username)) {
@@ -279,13 +277,14 @@ export class UsersService {
           // Wait for earlier assignments to commit BEFORE taking the shop snapshot.
           // Later eligibility reads then see the inactive/deleted account.
           const after = await tx.user.update({
-            where: { id, shopId },
+            where: { id },
             data: {
               status: UserStatus.INACTIVE,
               deletedAt: now,
             },
             select: {
               id: true,
+              shopId: true,
               username: true,
               displayName: true,
               role: true,
@@ -372,15 +371,22 @@ export class UsersService {
     return { ...removed, color: resolvedColor };
   }
 
+  private managedUserWhere(): Prisma.UserWhereInput {
+    return {
+      deletedAt: null,
+      OR: [{ shopId: requireCurrentShopId() }, { role: UserRole.MANAGER }],
+    };
+  }
+
   private async ensureUserExists(
     id: string,
-    client: Pick<Prisma.TransactionClient, 'user'> = this
-      .prismaService as unknown as Prisma.TransactionClient,
+    client: Pick<Prisma.TransactionClient, 'user'> = this.basePrismaService,
   ) {
     const user = await client.user.findFirst({
-      where: { id, deletedAt: null },
+      where: { id, ...this.managedUserWhere() },
       select: {
         id: true,
+        shopId: true,
         username: true,
         displayName: true,
         role: true,
@@ -418,6 +424,7 @@ export class UsersService {
     updatedAt?: Date;
     deletedAt?: Date | null;
     color?: string;
+    shopId?: string;
   }) {
     return {
       id: user.id,
@@ -429,6 +436,13 @@ export class UsersService {
       updatedAt: user.updatedAt,
       deletedAt: user.deletedAt,
       color: user.color,
+      ...(user.role === UserRole.MANAGER && user.shopId
+        ? {
+            managementScope: 'global',
+            homeShopId: user.shopId,
+            operationShopId: requireCurrentShopId(),
+          }
+        : {}),
     };
   }
 }
