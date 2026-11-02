@@ -27,8 +27,11 @@ export class CreateUserDto {
     if (normalized === 'EMPLOYEE') {
       return UserRole.EMPLOYEE;
     }
-    if (normalized === 'MULTI_SHOP_EMPLOYEE') {
-      return UserRole.MULTI_SHOP_EMPLOYEE;
+    if (normalized === 'MANAGER') {
+      return UserRole.MANAGER;
+    }
+    if (normalized === 'SHOP_ACCOUNT') {
+      return UserRole.SHOP_ACCOUNT;
     }
 
     return value as unknown;

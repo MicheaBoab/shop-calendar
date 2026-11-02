@@ -4,7 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AppointmentStatus, UserRole, UserStatus } from '@prisma/client';
+import {
+  AppointmentStatus,
+  Prisma,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { SHOP_SCOPED_PRISMA } from '../common/prisma/prisma.module';
 import type { ShopScopedPrismaClient } from '../common/prisma/prisma.module';
@@ -14,7 +19,10 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserPasswordDto } from './dto/update-user-password.dto';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto';
 import { getPendingAssignmentEmployeeUsernameForShop } from '../common/pending-assignment';
+import { isPendingAssignmentEmployeeUsername } from '../common/pending-assignment';
 import { canCreateManagedUserRole } from '../auth/role-capabilities';
+import { PrismaService } from '../common/prisma/prisma.service';
+import { StaffColorsService } from '../staff-colors/staff-colors.service';
 
 @Injectable()
 export class UsersService {
@@ -22,6 +30,8 @@ export class UsersService {
     @Inject(SHOP_SCOPED_PRISMA)
     private readonly prismaService: ShopScopedPrismaClient,
     private readonly auditService: AuditService,
+    private readonly basePrismaService: PrismaService,
+    private readonly staffColors: StaffColorsService,
   ) {}
 
   async listUsers() {
@@ -42,6 +52,37 @@ export class UsersService {
     return this.withStaffColors(users);
   }
 
+  async listServiceStaff() {
+    const shopId = requireCurrentShopId();
+    // This deliberately uses the base client: adding the extension's shopId
+    // predicate to this OR would hide managers whose home shop differs.
+    const users = await this.basePrismaService.user.findMany({
+      where: {
+        status: UserStatus.ACTIVE,
+        deletedAt: null,
+        OR: [{ shopId, role: UserRole.EMPLOYEE }, { role: UserRole.MANAGER }],
+      },
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        role: true,
+        status: true,
+      },
+      orderBy: [{ role: 'asc' }, { displayName: 'asc' }],
+    });
+
+    const serviceStaff = await this.withStaffColors(users);
+    return serviceStaff.sort((left, right) => {
+      const leftManager = left.role === UserRole.MANAGER;
+      const rightManager = right.role === UserRole.MANAGER;
+      return (
+        Number(leftManager) - Number(rightManager) ||
+        left.displayName.localeCompare(right.displayName)
+      );
+    });
+  }
+
   async createUser(dto: CreateUserDto, actorUserId: string) {
     if (!canCreateManagedUserRole(dto.role)) {
       throw new BadRequestException(
@@ -52,9 +93,14 @@ export class UsersService {
     const shopId = requireCurrentShopId();
     const passwordHash = await bcrypt.hash(dto.password, 10);
     const displayName = dto.displayName ?? dto.username;
-    const staffName = this.normalizeStaffName(displayName);
+    const auditContext =
+      await this.auditService.createAuditContext(actorUserId);
 
     const created = await this.prismaService.$transaction(async (tx) => {
+      await this.staffColors.lock(
+        tx as unknown as Prisma.TransactionClient,
+        shopId,
+      );
       const createdUser = await tx.user.create({
         data: {
           shopId,
@@ -74,25 +120,27 @@ export class UsersService {
         },
       });
 
-      const resolvedColor = await this.getStaffColor(staffName, tx);
-      const existingMapping = await tx.staffColorMap.findUnique({
-        where: { shopId_staffName: { shopId, staffName } },
-      });
-      if (!existingMapping) {
-        await tx.staffColorMap.create({
-          data: { shopId, staffName, color: resolvedColor },
-        });
-      }
+      const resolvedColor = await this.staffColors.allocate(
+        tx as unknown as Prisma.TransactionClient,
+        createdUser,
+        shopId,
+      );
 
-      return { ...createdUser, color: resolvedColor };
-    });
-
-    await this.auditService.recordUserManagementChange({
-      actorUserId,
-      action: 'user.create',
-      entityId: created.id,
-      beforePayload: null,
-      afterPayload: this.toAuditPayload(created),
+      const withColor = resolvedColor
+        ? { ...createdUser, color: resolvedColor }
+        : createdUser;
+      await this.auditService.recordUserManagementChange(
+        {
+          actorUserId,
+          action: 'user.create',
+          entityId: createdUser.id,
+          beforePayload: null,
+          afterPayload: this.toAuditPayload(withColor),
+        },
+        auditContext,
+        tx as unknown as Prisma.TransactionClient,
+      );
+      return withColor;
     });
 
     return created;
@@ -103,30 +151,46 @@ export class UsersService {
     dto: UpdateUserStatusDto,
     actorUserId: string,
   ) {
-    const existing = await this.ensureUserExists(id);
-    const updated = await this.prismaService.user.update({
-      where: { id },
-      data: { status: dto.status },
-      select: {
-        id: true,
-        username: true,
-        displayName: true,
-        role: true,
-        status: true,
-        updatedAt: true,
+    const auditContext =
+      await this.auditService.createAuditContext(actorUserId);
+    const { existing, updated } = await this.prismaService.$transaction(
+      async (tx) => {
+        const before = await this.ensureUserExists(
+          id,
+          tx as unknown as Prisma.TransactionClient,
+        );
+        const after = await tx.user.update({
+          where: { id },
+          data: { status: dto.status },
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            role: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+            deletedAt: true,
+          },
+        });
+        await this.auditService.recordUserManagementChange(
+          {
+            actorUserId,
+            action: 'user.status.update',
+            entityId: after.id,
+            beforePayload: this.toAuditPayload(before),
+            afterPayload: this.toAuditPayload(after),
+          },
+          auditContext,
+          tx as unknown as Prisma.TransactionClient,
+        );
+        return { existing: before, updated: after };
       },
-    });
-    const resolvedColor = await this.getStaffColor(
-      existing.displayName ?? existing.username,
     );
-
-    await this.auditService.recordUserManagementChange({
-      actorUserId,
-      action: 'user.status.update',
-      entityId: updated.id,
-      beforePayload: this.toAuditPayload(existing),
-      afterPayload: this.toAuditPayload(updated),
-    });
+    const resolvedColor = await this.staffColors.get(
+      existing,
+      requireCurrentShopId(),
+    );
 
     return { ...updated, color: resolvedColor };
   }
@@ -136,32 +200,47 @@ export class UsersService {
     dto: UpdateUserPasswordDto,
     actorUserId: string,
   ) {
-    const existing = await this.ensureUserExists(id);
     const passwordHash = await bcrypt.hash(dto.newPassword, 10);
-    const updated = await this.prismaService.user.update({
-      where: { id },
-      data: { passwordHash },
-      select: {
-        id: true,
-        username: true,
-        displayName: true,
-        role: true,
-        status: true,
-        updatedAt: true,
-        deletedAt: true,
+    const auditContext =
+      await this.auditService.createAuditContext(actorUserId);
+    const { existing, updated } = await this.prismaService.$transaction(
+      async (tx) => {
+        const before = await this.ensureUserExists(
+          id,
+          tx as unknown as Prisma.TransactionClient,
+        );
+        const after = await tx.user.update({
+          where: { id },
+          data: { passwordHash },
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            role: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+            deletedAt: true,
+          },
+        });
+        await this.auditService.recordUserManagementChange(
+          {
+            actorUserId,
+            action: 'user.password.update',
+            entityId: after.id,
+            beforePayload: this.toAuditPayload(before),
+            afterPayload: this.toAuditPayload(after),
+          },
+          auditContext,
+          tx as unknown as Prisma.TransactionClient,
+        );
+        return { existing: before, updated: after };
       },
-    });
-    const resolvedColor = await this.getStaffColor(
-      existing.displayName ?? existing.username,
     );
-
-    await this.auditService.recordUserManagementChange({
-      actorUserId,
-      action: 'user.password.update',
-      entityId: updated.id,
-      beforePayload: this.toAuditPayload(existing),
-      afterPayload: this.toAuditPayload(updated),
-    });
+    const resolvedColor = await this.staffColors.get(
+      existing,
+      requireCurrentShopId(),
+    );
 
     return { ...updated, color: resolvedColor };
   }
@@ -171,66 +250,128 @@ export class UsersService {
       throw new BadRequestException('User cannot remove their own account.');
     }
 
-    const existing = await this.ensureUserExists(id);
-    const removed = await this.prismaService.user.update({
-      where: { id },
-      data: {
-        status: UserStatus.INACTIVE,
-        deletedAt: new Date(),
-      },
-      select: {
-        id: true,
-        username: true,
-        displayName: true,
-        role: true,
-        status: true,
-        updatedAt: true,
-        deletedAt: true,
-      },
-    });
-    const resolvedColor = await this.getStaffColor(
-      existing.displayName ?? existing.username,
-    );
-    const pendingEmployee = await this.prismaService.user.findFirst({
-      where: {
-        username: getPendingAssignmentEmployeeUsernameForShop(
-          requireCurrentShopId(),
-        ),
-        deletedAt: null,
-      },
-      select: { id: true },
-    });
-    const now = new Date();
-
-    if (pendingEmployee) {
-      await this.prismaService.appointment.updateMany({
-        where: {
+    const shopId = requireCurrentShopId();
+    const auditContext =
+      await this.auditService.createAuditContext(actorUserId);
+    // Deliberately non-scoped: managers can serve appointments in other shops.
+    // The account lookup itself remains restricted to the administrator's shop.
+    const { removed, resolvedColor } =
+      await this.basePrismaService.$transaction(async (tx) => {
+        const before = await tx.user.findFirst({
+          where: { id, shopId, deletedAt: null },
+        });
+        if (!before) throw new NotFoundException('User not found');
+        if (isPendingAssignmentEmployeeUsername(before.username)) {
+          throw new BadRequestException(
+            'Pending assignment account cannot be removed.',
+          );
+        }
+        const resolvedColor = await this.staffColors.get(before, shopId, tx);
+        const now = new Date();
+        const futureWhere = {
           employeeId: id,
           status: AppointmentStatus.SCHEDULED,
           deletedAt: null,
           startAt: { gt: now },
-        },
-        data: {
-          employeeId: pendingEmployee.id,
-          employeeDisplayName: existing.displayName ?? existing.username,
-          employeeColor: resolvedColor,
-        },
+        };
+        const affectedShops =
+          before.role === UserRole.MANAGER
+            ? await tx.appointment.findMany({
+                where: futureWhere,
+                distinct: ['shopId'],
+                select: { shopId: true },
+                orderBy: { shopId: 'asc' },
+              })
+            : [{ shopId }];
+        const after = await tx.user.update({
+          where: { id, shopId },
+          data: {
+            status: UserStatus.INACTIVE,
+            deletedAt: now,
+          },
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            role: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+            deletedAt: true,
+          },
+        });
+        for (const affected of affectedShops) {
+          const targetShopId = affected.shopId;
+          const pendingEmployee = await tx.user.findFirst({
+            where: {
+              shopId: targetShopId,
+              username:
+                getPendingAssignmentEmployeeUsernameForShop(targetShopId),
+              role: UserRole.EMPLOYEE,
+              status: UserStatus.ACTIVE,
+              deletedAt: null,
+            },
+            select: { id: true },
+          });
+          if (!pendingEmployee) {
+            throw new BadRequestException(
+              `Pending assignment employee missing for shop ${targetShopId}`,
+            );
+          }
+          const result = await tx.appointment.updateMany({
+            where: { ...futureWhere, shopId: targetShopId },
+            data: {
+              employeeId: pendingEmployee.id,
+              // Preserve the removed employee's historical snapshot; the UI
+              // resolves pending name/color from the current employeeId first.
+              employeeDisplayName: before.displayName ?? before.username,
+              employeeColor: resolvedColor,
+            },
+          });
+          if (targetShopId !== shopId) {
+            const shop = await tx.shop.findUnique({
+              where: { id: targetShopId },
+              select: { id: true, name: true },
+            });
+            if (!shop) throw new NotFoundException('Shop not found');
+            await this.auditService.recordUserManagementChange(
+              {
+                actorUserId,
+                action: 'user.remove',
+                entityId: id,
+                beforePayload: this.toAuditPayload(before),
+                afterPayload: {
+                  ...this.toAuditPayload(after),
+                  reassignedAppointments: result.count,
+                },
+              },
+              { ...auditContext, shopId: targetShopId, shopSnapshot: shop },
+              tx,
+            );
+          }
+        }
+        await this.auditService.recordUserManagementChange(
+          {
+            actorUserId,
+            action: 'user.remove',
+            entityId: after.id,
+            beforePayload: this.toAuditPayload(before),
+            afterPayload: this.toAuditPayload(after),
+          },
+          auditContext,
+          tx,
+        );
+        return { removed: after, resolvedColor };
       });
-    }
-
-    await this.auditService.recordUserManagementChange({
-      actorUserId,
-      action: 'user.remove',
-      entityId: removed.id,
-      beforePayload: this.toAuditPayload(existing),
-      afterPayload: this.toAuditPayload(removed),
-    });
-
     return { ...removed, color: resolvedColor };
   }
 
-  private async ensureUserExists(id: string) {
-    const user = await this.prismaService.user.findFirst({
+  private async ensureUserExists(
+    id: string,
+    client: Pick<Prisma.TransactionClient, 'user'> = this
+      .prismaService as unknown as Prisma.TransactionClient,
+  ) {
+    const user = await client.user.findFirst({
       where: { id, deletedAt: null },
       select: {
         id: true,
@@ -251,52 +392,14 @@ export class UsersService {
   }
 
   private async withStaffColors<
-    T extends { username: string; displayName: string },
+    T extends { id: string; username: string; role: UserRole },
   >(users: T[]) {
     return Promise.all(
       users.map(async (user) => {
-        const color = await this.getStaffColor(
-          user.displayName ?? user.username,
-        );
+        const color = await this.staffColors.get(user, requireCurrentShopId());
         return { ...user, color };
       }),
     );
-  }
-
-  private async getStaffColor(
-    staffName: string,
-    client: Pick<ShopScopedPrismaClient, 'staffColorMap'> = this.prismaService,
-  ) {
-    const normalizedStaffName = this.normalizeStaffName(staffName);
-    const existing = await client.staffColorMap.findUnique({
-      where: {
-        shopId_staffName: {
-          shopId: requireCurrentShopId(),
-          staffName: normalizedStaffName,
-        },
-      },
-    });
-    if (existing?.color) {
-      return existing.color;
-    }
-
-    return this.defaultColorForStaffName(normalizedStaffName);
-  }
-
-  private normalizeStaffName(staffName: string) {
-    const normalized = staffName.trim().toLowerCase();
-    return normalized || 'employee-fallback';
-  }
-
-  private defaultColorForStaffName(staffName: string) {
-    let hash = 2166136261;
-    for (let index = 0; index < staffName.length; index += 1) {
-      hash ^= staffName.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
-    }
-
-    const hue = Math.abs(hash) % 360;
-    return `hsl(${hue} 70% 56%)`;
   }
 
   private toAuditPayload(user: {

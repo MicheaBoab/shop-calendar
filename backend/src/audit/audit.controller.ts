@@ -12,7 +12,7 @@ export class AuditController {
   constructor(private readonly auditService: AuditService) {}
 
   @Get('logs')
-  @Roles(UserRole.ADMIN)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   listAuditLogs(@Query() query: ListAuditLogsDto) {
     return this.auditService.listAuditLogs(query);
   }

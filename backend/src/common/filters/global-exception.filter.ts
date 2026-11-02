@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Request, Response } from 'express';
+import { safeRequestUrl } from '../safe-request-url';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -42,22 +43,20 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       const stack =
         exception instanceof Error ? exception.stack : String(exception);
       this.logger.error(
-        `Unhandled exception on ${request.method} ${request.url}: ${stack}`,
+        `Unhandled exception on ${request.method} ${safeRequestUrl(request.url)}: ${stack}`,
       );
     }
 
     response.status(status).json({
       success: false,
       statusCode: status,
-      path: request.url,
+      path: safeRequestUrl(request.url),
       timestamp: new Date().toISOString(),
       message,
     });
   }
 
-  private translateKnownPrismaError(
-    exception: unknown,
-  ): HttpException | null {
+  private translateKnownPrismaError(exception: unknown): HttpException | null {
     if (
       exception instanceof Prisma.PrismaClientKnownRequestError &&
       exception.code === 'P2002'

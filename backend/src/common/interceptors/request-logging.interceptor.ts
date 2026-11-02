@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Observable, tap } from 'rxjs';
 import { Request, Response } from 'express';
+import { safeRequestUrl } from '../safe-request-url';
 
 @Injectable()
 export class RequestLoggingInterceptor implements NestInterceptor {
@@ -23,7 +24,7 @@ export class RequestLoggingInterceptor implements NestInterceptor {
         next: () => {
           const durationMs = Date.now() - startedAt;
           this.logger.log(
-            `${request.method} ${request.url} ${response.statusCode} ${durationMs}ms`,
+            `${request.method} ${safeRequestUrl(request.url)} ${response.statusCode} ${durationMs}ms`,
           );
         },
       }),

@@ -94,7 +94,12 @@ describe('shopScopeExtension', () => {
       { shopId: 'shop-a', userId: 'u1', role: 'ADMIN' },
       async () => {
         await client.user.create({
-          data: { username: 'x', shopId: 'attacker-shop' },
+          data: {
+            username: 'x',
+            passwordHash: 'secret-hash',
+            displayName: 'X',
+            shopId: 'attacker-shop',
+          },
         });
       },
     );
@@ -112,8 +117,18 @@ describe('shopScopeExtension', () => {
       async () => {
         await client.user.createMany({
           data: [
-            { username: 'x', shopId: 'attacker-shop' },
-            { username: 'y', shopId: 'another-attacker-shop' },
+            {
+              username: 'x',
+              passwordHash: 'hash-x',
+              displayName: 'X',
+              shopId: 'attacker-shop',
+            },
+            {
+              username: 'y',
+              passwordHash: 'hash-y',
+              displayName: 'Y',
+              shopId: 'another-attacker-shop',
+            },
           ],
         });
       },

@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { AuthService } from './auth.service';
@@ -69,9 +69,9 @@ describe('AuthService', () => {
     expect(result.activeShopId).toBeNull();
   });
 
-  it('requires shop selection when a multi-shop employee logs in', async () => {
+  it('requires shop selection when a manager logs in', async () => {
     prismaService.user.findFirst.mockResolvedValueOnce(
-      makeUser({ role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' }),
+      makeUser({ role: UserRole.MANAGER, shopId: 'shop-a' }),
     );
 
     const result = await service.login({
@@ -112,15 +112,15 @@ describe('AuthService', () => {
     expect(result.activeShopId).toBe('shop-b');
   });
 
-  it('allows a multi-shop employee to switch to a different shop', async () => {
+  it('allows a manager to switch to a different shop', async () => {
     prismaService.user.findFirst.mockResolvedValueOnce(
-      makeUser({ role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' }),
+      makeUser({ role: UserRole.MANAGER, shopId: 'shop-a' }),
     );
 
     const result = await service.selectShop('user-1', 'shop-b');
 
     expect(shopScopeService.assertAccess).toHaveBeenCalledWith(
-      { role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' },
+      { role: UserRole.MANAGER, shopId: 'shop-a' },
       'shop-b',
     );
     expect(shopScopeService.assertShopExists).toHaveBeenCalledWith('shop-b');
@@ -159,26 +159,47 @@ describe('AuthService', () => {
     expect(shopScopeService.assertShopExists).not.toHaveBeenCalled();
   });
 
-  it('keeps a multi-shop employee active shop during refresh', async () => {
+  it('keeps a manager active shop during refresh', async () => {
     jwtService.verifyAsync.mockResolvedValueOnce({
       sub: 'user-1',
       username: 'multi',
-      role: UserRole.MULTI_SHOP_EMPLOYEE,
+      role: UserRole.MANAGER,
       uv: new Date('2026-01-01T00:00:00.000Z').getTime(),
       shopId: 'shop-a',
       activeShopId: 'shop-b',
     });
     prismaService.user.findFirst.mockResolvedValueOnce(
-      makeUser({ role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' }),
+      makeUser({ role: UserRole.MANAGER, shopId: 'shop-a' }),
     );
 
     const result = await service.refresh('refresh-token');
 
     expect(shopScopeService.assertAccess).toHaveBeenCalledWith(
-      { role: UserRole.MULTI_SHOP_EMPLOYEE, shopId: 'shop-a' },
+      { role: UserRole.MANAGER, shopId: 'shop-a' },
       'shop-b',
     );
     expect(result.needsShopSelection).toBe(false);
     expect(result.activeShopId).toBe('shop-b');
+  });
+
+  it('rejects a stale refresh token after a role migration bumps updatedAt', async () => {
+    const previousUpdatedAt = new Date('2026-01-01T00:00:00.000Z');
+    jwtService.verifyAsync.mockResolvedValueOnce({
+      sub: 'user-1',
+      username: 'former-multi-shop',
+      role: 'MULTI_SHOP_EMPLOYEE',
+      uv: previousUpdatedAt.getTime(),
+      shopId: 'shop-a',
+    });
+    prismaService.user.findFirst.mockResolvedValueOnce(
+      makeUser({
+        role: UserRole.MANAGER,
+        updatedAt: new Date(previousUpdatedAt.getTime() + 1),
+      }),
+    );
+
+    await expect(service.refresh('stale-refresh-token')).rejects.toThrow(
+      UnauthorizedException,
+    );
   });
 });

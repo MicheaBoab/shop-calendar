@@ -33,8 +33,14 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get()
+  @Roles(UserRole.ADMIN)
   listUsers() {
     return this.usersService.listUsers();
+  }
+
+  @Get('staff')
+  listServiceStaff() {
+    return this.usersService.listServiceStaff();
   }
 
   @Post()

@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   MessageEvent,
   Param,
@@ -10,10 +11,9 @@ import {
   Query,
   Req,
   Sse,
-  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
-import { UserRole, UserStatus } from '@prisma/client';
+import { UserRole } from '@prisma/client';
 import { Request } from 'express';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
@@ -23,52 +23,46 @@ import { UpdateAppointmentDto } from './dto/update-appointment.dto';
 import { MoveAppointmentDto } from './dto/move-appointment.dto';
 import { ListAppointmentsDto } from './dto/list-appointments.dto';
 import { DeleteAppointmentDto } from './dto/delete-appointment.dto';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AppointmentsAuthGuard, StreamAuth } from './appointments-auth.guard';
 import { AppointmentsEventsService } from './appointments-events.service';
-import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
-import { PrismaService } from '../common/prisma/prisma.service';
-import { isAdmin } from '../auth/role-capabilities';
-
-type AuthTokenPayload = {
-  sub: string;
-  username: string;
-  role: string;
-  uv: number;
-};
+import { canManageAppointments } from '../auth/role-capabilities';
+import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
 
 type AuthenticatedRequest = Request & {
   user: {
     sub: string;
     username: string;
     role: UserRole;
+    displayName?: string;
   };
 };
 
 @Controller('appointments')
+@UseGuards(AppointmentsAuthGuard, RolesGuard)
 export class AppointmentsController {
   constructor(
     private readonly appointmentsService: AppointmentsService,
     private readonly appointmentsEventsService: AppointmentsEventsService,
-    private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-    private readonly prismaService: PrismaService,
   ) {}
 
   @Get()
-  @UseGuards(JwtAuthGuard)
   listAppointments(@Query() query: ListAppointmentsDto) {
     return this.appointmentsService.listAppointments(query);
   }
 
   @Get('customer-lookup')
-  @UseGuards(JwtAuthGuard)
   findCustomerByPhone(@Query('phone') phone: string) {
     return this.appointmentsService.findCustomerByPhone(phone);
   }
 
   @Post()
-  @UseGuards(JwtAuthGuard)
+  @Roles(
+    UserRole.ADMIN,
+    UserRole.MANAGER,
+    UserRole.EMPLOYEE,
+    UserRole.SHOP_ACCOUNT,
+  )
   createAppointment(
     @Body() dto: CreateAppointmentDto,
     @Req() req: AuthenticatedRequest,
@@ -81,7 +75,6 @@ export class AppointmentsController {
   }
 
   @Patch(':id')
-  @UseGuards(JwtAuthGuard)
   updateAppointment(
     @Param('id') id: string,
     @Body() dto: UpdateAppointmentDto,
@@ -95,21 +88,26 @@ export class AppointmentsController {
   }
 
   @Delete(':id')
-  @UseGuards(JwtAuthGuard)
   deleteAppointment(
     @Param('id') id: string,
     @Body() _dto: DeleteAppointmentDto,
     @Req() req: AuthenticatedRequest,
   ) {
-    if (isAdmin(req.user.role)) {
-      return this.appointmentsService.deleteAppointment(id, req.user.sub);
+    if (!canManageAppointments(req.user.role)) {
+      throw new ForbiddenException(
+        'DELETE /appointments/:id is reserved for soft deletion. Use POST /appointments/:id/cancel to cancel.',
+      );
     }
 
+    return this.appointmentsService.deleteAppointment(id, req.user.sub);
+  }
+
+  @Post(':id/cancel')
+  cancelAppointment(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
     return this.appointmentsService.cancelAppointment(id, req.user.sub);
   }
 
   @Post(':id/move')
-  @UseGuards(JwtAuthGuard)
   moveAppointment(
     @Param('id') id: string,
     @Body() dto: MoveAppointmentDto,
@@ -123,45 +121,8 @@ export class AppointmentsController {
   }
 
   @Sse('stream')
-  async streamAppointmentsChanged(
-    @Query('accessToken') accessToken?: string,
-  ): Promise<Observable<MessageEvent>> {
-    if (!accessToken) {
-      throw new UnauthorizedException('Missing access token');
-    }
-
-    try {
-      const payload = await this.jwtService.verifyAsync<
-        Partial<AuthTokenPayload>
-      >(accessToken, {
-        secret: this.configService.get<string>(
-          'JWT_ACCESS_SECRET',
-          'dev-access-secret',
-        ),
-      });
-
-      if (!payload?.sub || typeof payload.uv !== 'number') {
-        throw new UnauthorizedException('Invalid access token');
-      }
-
-      const user = await this.prismaService.user.findFirst({
-        where: {
-          id: payload.sub,
-          status: UserStatus.ACTIVE,
-          deletedAt: null,
-        },
-        select: {
-          updatedAt: true,
-        },
-      });
-
-      if (!user || user.updatedAt.getTime() !== payload.uv) {
-        throw new UnauthorizedException('Session expired');
-      }
-    } catch {
-      throw new UnauthorizedException('Invalid access token');
-    }
-
+  @StreamAuth()
+  streamAppointmentsChanged(): Observable<MessageEvent> {
     return this.appointmentsEventsService.watchAppointmentsChanged().pipe(
       map((event) => ({
         type: event.type,

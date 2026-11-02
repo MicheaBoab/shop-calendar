@@ -18,17 +18,28 @@ describe('CreateUserDto', () => {
     expect(dto.role).toBe(UserRole.EMPLOYEE);
   });
 
-  it('accepts multi-shop employee role values from the UI', async () => {
+  it('accepts manager role values from the UI', async () => {
     const dto = plainToInstance(CreateUserDto, {
-      username: 'multi',
+      username: 'manager',
       password: 'secret123',
-      displayName: 'Multi Shop',
-      role: 'multi_shop_employee',
+      displayName: 'Manager',
+      role: 'manager',
     });
 
     const errors = await validate(dto);
 
     expect(errors).toEqual([]);
-    expect(dto.role).toBe(UserRole.MULTI_SHOP_EMPLOYEE);
+    expect(dto.role).toBe(UserRole.MANAGER);
+  });
+
+  it('accepts the shared shop account role', async () => {
+    const dto = plainToInstance(CreateUserDto, {
+      username: 'shop',
+      password: 'secret123',
+      role: 'shop_account',
+    });
+
+    await expect(validate(dto)).resolves.toEqual([]);
+    expect(dto.role).toBe(UserRole.SHOP_ACCOUNT);
   });
 });

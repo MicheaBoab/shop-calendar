@@ -118,88 +118,96 @@ export interface ParsedFlexibleTimeInput {
   normalized: string;
 }
 
-interface TimeInferenceWindow {
+export interface AppointmentTimeWindow {
   startMinutes: number;
   endMinutes: number;
 }
 
-interface ParseFlexibleTimeOptions {
-  inferenceWindow?: TimeInferenceWindow;
-}
+export type AppointmentTimeResolution =
+  | { status: 'valid'; parsed: ParsedFlexibleTimeInput }
+  | { status: 'invalid' | 'ambiguous' | 'outside-window' | 'window-unavailable' };
 
-const isWithinInferenceWindow = (minutes: number, window: TimeInferenceWindow) => {
-  if (window.startMinutes <= window.endMinutes) {
-    return minutes >= window.startMinutes && minutes <= window.endMinutes;
-  }
+const isValidAppointmentTimeWindow = (window: AppointmentTimeWindow) => (
+  Number.isInteger(window.startMinutes)
+  && Number.isInteger(window.endMinutes)
+  && window.startMinutes >= 0
+  && window.endMinutes <= 24 * 60
+  && window.startMinutes < window.endMinutes
+);
 
-  return minutes >= window.startMinutes || minutes <= window.endMinutes;
-};
-
-const inferHoursByWindow = (rawHours: number, minutes: number, window: TimeInferenceWindow) => {
-  if (rawHours < 1 || rawHours > 12) {
-    return null;
-  }
-
-  const candidateHours = rawHours === 12 ? [12, 0] : [rawHours, rawHours + 12];
-  const matched = candidateHours.find((hours) => {
-    const totalMinutes = (hours * 60) + minutes;
-    return isWithinInferenceWindow(totalMinutes, window);
-  });
-
-  return matched ?? null;
-};
-
-export const parseFlexibleTimeInput = (value: string, options?: ParseFlexibleTimeOptions): ParsedFlexibleTimeInput | null => {
-  const trimmed = value.trim();
+const parseTwelveHourInput = (value: string) => {
+  const trimmed = value.trim().replace(/：/g, ':');
   if (!trimmed) {
     return null;
   }
-  const normalizedInput = trimmed.replace(/：/g, ':');
 
-  const normalize = (hours: number, minutes: number) => ({
-    hours,
-    minutes,
-    normalized: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`,
+  let rawHours: number;
+  let minutes: number;
+  const colonMatch = /^(\d{1,2}):(\d{1,2})$/.exec(trimmed);
+  if (colonMatch) {
+    rawHours = Number.parseInt(colonMatch[1], 10);
+    minutes = Number.parseInt(colonMatch[2], 10);
+  } else if (/^\d{3,4}$/.test(trimmed)) {
+    const hourDigits = trimmed.length === 3 ? 1 : 2;
+    rawHours = Number.parseInt(trimmed.slice(0, hourDigits), 10);
+    minutes = Number.parseInt(trimmed.slice(hourDigits), 10);
+  } else if (/^\d{1,2}$/.test(trimmed)) {
+    rawHours = Number.parseInt(trimmed, 10);
+    minutes = 0;
+  } else {
+    return null;
+  }
+
+  if (rawHours < 1 || rawHours > 12 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+
+  return { rawHours, minutes };
+};
+
+export const formatAppointmentTimeInput = (value: Date) => {
+  const displayHours = value.getHours() % 12 || 12;
+  const minutes = String(value.getMinutes()).padStart(2, '0');
+  return `${displayHours}:${minutes}`;
+};
+
+export const resolveAppointmentTimeInput = (
+  value: string,
+  window?: AppointmentTimeWindow | null,
+): AppointmentTimeResolution => {
+  if (!window || !isValidAppointmentTimeWindow(window)) {
+    return { status: 'window-unavailable' };
+  }
+
+  const parsedInput = parseTwelveHourInput(value);
+  if (!parsedInput) {
+    return { status: 'invalid' };
+  }
+
+  const candidateHours = parsedInput.rawHours === 12
+    ? [12, 0]
+    : [parsedInput.rawHours, parsedInput.rawHours + 12];
+  const matchingHours = candidateHours.filter((hours) => {
+    const totalMinutes = (hours * 60) + parsedInput.minutes;
+    return totalMinutes >= window.startMinutes && totalMinutes < window.endMinutes;
   });
 
-  const twentyFourHourMatch = /^(\d{1,2}):(\d{1,2})$/.exec(normalizedInput);
-  if (twentyFourHourMatch) {
-    const hours = Number.parseInt(twentyFourHourMatch[1], 10);
-    const minutes = Number.parseInt(twentyFourHourMatch[2], 10);
-    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-      return null;
-    }
-
-    const inferredHours = options?.inferenceWindow
-      ? inferHoursByWindow(hours, minutes, options.inferenceWindow)
-      : null;
-
-    if (inferredHours !== null) {
-      return normalize(inferredHours, minutes);
-    }
-
-    return normalize(hours, minutes);
+  if (matchingHours.length === 0) {
+    return { status: 'outside-window' };
+  }
+  if (matchingHours.length > 1) {
+    return { status: 'ambiguous' };
   }
 
-  const hourOnlyMatch = /^(\d{1,2})$/.exec(normalizedInput);
-  if (hourOnlyMatch) {
-    const rawHours = Number.parseInt(hourOnlyMatch[1], 10);
-    if (rawHours < 0 || rawHours > 23) {
-      return null;
-    }
-
-    const inferredHours = options?.inferenceWindow
-      ? inferHoursByWindow(rawHours, 0, options.inferenceWindow)
-      : null;
-
-    if (inferredHours !== null) {
-      return normalize(inferredHours, 0);
-    }
-
-    return normalize(rawHours, 0);
-  }
-
-  return null;
+  const hours = matchingHours[0];
+  return {
+    status: 'valid',
+    parsed: {
+      hours,
+      minutes: parsedInput.minutes,
+      normalized: `${hours % 12 || 12}:${String(parsedInput.minutes).padStart(2, '0')}`,
+    },
+  };
 };
 
 export const computeEndFromDuration = (startAt: Date, durationMinutes: number) => {

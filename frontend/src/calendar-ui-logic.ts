@@ -1,4 +1,4 @@
-import { formatDateForUsInput } from './appointment-time';
+import { formatAppointmentTimeInput, formatDateForUsInput } from './appointment-time';
 
 export type CalendarView = 'timeGridWeek' | 'timeGridThreeDay' | 'timeGridDay';
 
@@ -19,12 +19,6 @@ export const getPrimaryCalendarControl = (isMobileCalendarLayout: boolean) => {
   } as const;
 };
 
-const formatTimeOnlyForInput = (value: Date) => {
-  const hours = String(value.getHours()).padStart(2, '0');
-  const minutes = String(value.getMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
-};
-
 export const applySlotClickToForm = <T extends { startDate: string; startTime: string }>(
   currentForm: T,
   clickedDate: Date,
@@ -32,6 +26,6 @@ export const applySlotClickToForm = <T extends { startDate: string; startTime: s
   return {
     ...currentForm,
     startDate: formatDateForUsInput(clickedDate),
-    startTime: formatTimeOnlyForInput(clickedDate),
+    startTime: formatAppointmentTimeInput(clickedDate),
   };
 };

@@ -12,28 +12,23 @@ const makeContext = (role: UserRole) => ({
 });
 
 describe('RolesGuard', () => {
-  it('rejects multi-shop employees from admin-only routes', () => {
+  it('rejects managers from admin-only routes', () => {
     const reflector = {
       getAllAndOverride: jest.fn(() => [UserRole.ADMIN]),
     } as unknown as Reflector;
     const guard = new RolesGuard(reflector);
 
     expect(() =>
-      guard.canActivate(makeContext(UserRole.MULTI_SHOP_EMPLOYEE) as any),
+      guard.canActivate(makeContext(UserRole.MANAGER) as any),
     ).toThrow(ForbiddenException);
   });
 
-  it('allows multi-shop employees on routes that explicitly include them', () => {
+  it('allows managers on routes that explicitly include them', () => {
     const reflector = {
-      getAllAndOverride: jest.fn(() => [
-        UserRole.ADMIN,
-        UserRole.MULTI_SHOP_EMPLOYEE,
-      ]),
+      getAllAndOverride: jest.fn(() => [UserRole.ADMIN, UserRole.MANAGER]),
     } as unknown as Reflector;
     const guard = new RolesGuard(reflector);
 
-    expect(
-      guard.canActivate(makeContext(UserRole.MULTI_SHOP_EMPLOYEE) as any),
-    ).toBe(true);
+    expect(guard.canActivate(makeContext(UserRole.MANAGER) as any)).toBe(true);
   });
 });

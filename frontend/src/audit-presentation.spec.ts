@@ -1,0 +1,272 @@
+import { describe, expect, it } from "vitest";
+import { getAuditPresentation } from "./audit-presentation";
+
+const formatDate = (value: string) => `local:${value}`;
+const missing = "legacy missing";
+const noChanges = "no changes";
+
+const appointment = (overrides: Record<string, unknown> = {}) => ({
+  id: "appointment-1",
+  employeeId: "staff-1",
+  employeeDisplayName: "Alex",
+  employeeColor: "#123456",
+  startAt: "2026-11-02T18:00:00.000Z",
+  endAt: "2026-11-02T19:00:00.000Z",
+  phone: "3125550100",
+  price: "70",
+  customerName: "Customer",
+  serviceName: "Cut",
+  status: "SCHEDULED",
+  note: null,
+  deletedAt: null,
+  ...overrides,
+});
+
+describe("audit presentation", () => {
+  it("summarizes created appointments with readable service data", () => {
+    const result = getAuditPresentation(
+      null,
+      { groupId: "group-1", appointments: [appointment()] },
+      "appointment",
+      "en",
+      formatDate,
+      missing,
+      noChanges,
+    );
+
+    expect(result.created).toBe(true);
+    expect(result.summary).toContain("Service staff: Alex");
+    expect(result.summary).toContain("Phone: 3125550100");
+    expect(result.summary).toContain("Price: 70");
+    expect(result.summary.some((line) => line.includes("local:"))).toBe(true);
+  });
+
+  it("shows group membership and party-size differences by names", () => {
+    const result = getAuditPresentation(
+      { groupId: "g", appointments: [appointment()] },
+      {
+        groupId: "g",
+        appointments: [
+          appointment(),
+          appointment({
+            id: "appointment-2",
+            employeeId: "staff-2",
+            employeeDisplayName: "Sam",
+          }),
+        ],
+      },
+      "appointment",
+      "zh-CN",
+      formatDate,
+      missing,
+      noChanges,
+    );
+
+    expect(result.summary.some((line) => line.startsWith("服务员工:"))).toBe(
+      false,
+    );
+    expect(result.summary).toContain("新增服务员工: Sam");
+    expect(result.summary).toContain("人数: 1 → 2");
+  });
+
+  it("names removed group members instead of showing only an opaque count", () => {
+    const result = getAuditPresentation(
+      {
+        groupId: "g",
+        appointments: [
+          appointment(),
+          appointment({
+            id: "appointment-2",
+            employeeId: "staff-2",
+            employeeDisplayName: "Sam",
+          }),
+        ],
+      },
+      { groupId: "g", appointments: [appointment()] },
+      "appointment",
+      "en",
+      formatDate,
+      missing,
+      noChanges,
+    );
+
+    expect(result.summary).toContain("Removed staff: Sam");
+    expect(result.summary).toContain("Party size: 2 → 1");
+  });
+
+  it("reports cancel and soft-delete state transitions", () => {
+    const before = { groupId: "g", appointments: [appointment()] };
+    const cancelled = getAuditPresentation(
+      before,
+      { groupId: "g", appointments: [appointment({ status: "CANCELLED" })] },
+      "appointment",
+      "en",
+      formatDate,
+      missing,
+      noChanges,
+    );
+    const deleted = getAuditPresentation(
+      before,
+      {
+        groupId: "g",
+        appointments: [
+          appointment({
+            status: "CANCELLED",
+            deletedAt: "2026-11-02T17:00:00Z",
+          }),
+        ],
+      },
+      "appointment",
+      "en",
+      formatDate,
+      missing,
+      noChanges,
+    );
+
+    expect(cancelled.summary).toContain("Status: Scheduled → Cancelled");
+    expect(deleted.summary).toContain(
+      "Calendar visibility: visible → 1 hidden",
+    );
+  });
+
+  it("does not invent details for old records and tolerates malformed/unknown payloads", () => {
+    expect(
+      getAuditPresentation(
+        null,
+        null,
+        "future.action",
+        "en",
+        formatDate,
+        missing,
+        noChanges,
+      ),
+    ).toMatchObject({
+      legacyMissing: true,
+      unrecognizedPayload: false,
+      summary: [missing],
+    });
+    expect(
+      getAuditPresentation(
+        [],
+        { unexpected: { nested: true } },
+        "unknown",
+        "en",
+        formatDate,
+        missing,
+        noChanges,
+      ),
+    ).toMatchObject({
+      legacyMissing: false,
+      unrecognizedPayload: true,
+      summary: [missing],
+    });
+  });
+
+  const present = (before: unknown, after: unknown) =>
+    getAuditPresentation(
+      before,
+      after,
+      "appointment",
+      "en",
+      formatDate,
+      missing,
+      noChanges,
+    );
+
+  it("shows same-name replacement by ID in single and grouped snapshots", () => {
+    const before = appointment({ employeeId: "staff-A" });
+    const after = appointment({ employeeId: "staff-B" });
+    expect(present(before, after).changes).toContainEqual({
+      field: "Service staff",
+      before: "Alex (staff-A)",
+      after: "Alex (staff-B)",
+    });
+    const group = present(
+      { appointments: [before] },
+      { appointments: [after] },
+    );
+    expect(group.changes).toEqual([
+      { field: "Added staff", before: "", after: "Alex (staff-B)" },
+      { field: "Removed staff", before: "", after: "Alex (staff-A)" },
+    ]);
+  });
+
+  it("compares canonical ID sets regardless of order and reports rename without replacement", () => {
+    const a = appointment();
+    const b = appointment({
+      employeeId: "staff-2",
+      employeeDisplayName: "Sam",
+    });
+    expect(
+      present({ appointments: [a, b] }, { appointments: [b, a] }).summary,
+    ).toEqual([noChanges]);
+    const renamed = present(
+      { appointments: [a] },
+      { appointments: [appointment({ employeeDisplayName: "Alex New" })] },
+    );
+    expect(renamed.changes).toEqual([
+      { field: "Service staff", before: "Alex", after: "Alex New" },
+    ]);
+  });
+
+  it("keeps duplicate names distinguishable and missing legacy identities explicit", () => {
+    const group = {
+      appointments: [
+        appointment({ employeeId: "staff-A" }),
+        appointment({ employeeId: "staff-B" }),
+      ],
+    };
+    expect(present(null, group).summary).toContain(
+      "Service staff: Alex (staff-A), Alex (staff-B)",
+    );
+    const legacy = appointment({ employeeId: undefined });
+    expect(present(null, legacy).summary).toContain(
+      "Service staff: Alex (ID missing)",
+    );
+    expect(present(legacy, legacy).summary).toEqual([noChanges]);
+    expect(
+      present(
+        null,
+        appointment({ employeeId: undefined, employeeDisplayName: undefined }),
+      ).summary,
+    ).toContain("Service staff: Unknown staff (ID missing)");
+    expect(present(legacy, appointment()).changes).toContainEqual({
+      field: "Service staff",
+      before: "Alex (ID missing)",
+      after: "Alex (staff-1)",
+    });
+  });
+  it("shows a retained employee rename alongside membership additions without duplicate aggregate changes", () => {
+    const result = present(
+      { appointments: [appointment()] },
+      {
+        appointments: [
+          appointment({ employeeDisplayName: "Alex New" }),
+          appointment({ employeeId: "staff-2", employeeDisplayName: "Sam" }),
+        ],
+      },
+    );
+    expect(result.changes).toEqual([
+      { field: "Service staff", before: "Alex", after: "Alex New" },
+      { field: "Party size", before: "1", after: "2" },
+      { field: "Added staff", before: "", after: "Sam" },
+    ]);
+  });
+  it("does not invent membership identities for name-only group history", () => {
+    const result = present(
+      { appointments: [appointment({ employeeId: undefined })] },
+      {
+        appointments: [
+          appointment({ employeeId: undefined, employeeDisplayName: "Sam" }),
+        ],
+      },
+    );
+    expect(result.changes).toEqual([
+      {
+        field: "Service staff",
+        before: "Alex (ID missing)",
+        after: "Sam (ID missing)",
+      },
+    ]);
+  });
+});

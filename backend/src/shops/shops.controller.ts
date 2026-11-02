@@ -12,7 +12,7 @@ export class ShopsController {
   constructor(private readonly shopScopeService: ShopScopeService) {}
 
   @Get()
-  @Roles(UserRole.ADMIN, UserRole.MULTI_SHOP_EMPLOYEE)
+  @Roles(UserRole.ADMIN, UserRole.MANAGER)
   @SkipShopScope()
   listShops() {
     return this.shopScopeService.listShops();

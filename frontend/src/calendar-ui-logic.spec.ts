@@ -53,11 +53,11 @@ describe('applySlotClickToForm', () => {
     expect(result).toEqual({
       ...currentForm,
       startDate: '07/30/2026',
-      startTime: '14:30',
+      startTime: '2:30',
     });
   });
 
-  it('zero-pads time parts for single-digit hour/minute values', () => {
+  it('formats clicked times as 12-hour values without AM/PM', () => {
     const currentForm = {
       startDate: '07/20/2026',
       startTime: '09:00',
@@ -66,6 +66,6 @@ describe('applySlotClickToForm', () => {
     const result = applySlotClickToForm(currentForm, new Date(2026, 6, 30, 7, 5, 0, 0));
 
     expect(result.startDate).toBe('07/30/2026');
-    expect(result.startTime).toBe('07:05');
+    expect(result.startTime).toBe('7:05');
   });
 });

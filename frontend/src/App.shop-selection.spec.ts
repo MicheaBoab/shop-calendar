@@ -5,6 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { I18nProvider } from './i18n/i18n';
 
+Object.defineProperties(HTMLDialogElement.prototype, {
+  showModal: { configurable: true, value() { this.setAttribute('open', ''); this.querySelector('button')?.focus(); } },
+  close: { configurable: true, value() { this.removeAttribute('open'); this.dispatchEvent(new Event('close')); } },
+});
+
 vi.mock('@fullcalendar/react', () => {
   const MockFullCalendar = React.forwardRef<any, any>((_props, ref) => {
     const calendarRootRef = useRef<HTMLDivElement | null>(null);
@@ -40,7 +45,7 @@ class MockEventSource {
   }
 }
 
-type TestRole = 'ADMIN' | 'EMPLOYEE' | 'MULTI_SHOP_EMPLOYEE';
+type TestRole = 'ADMIN' | 'EMPLOYEE' | 'MANAGER';
 
 interface ShopFixture {
   id: string;
@@ -113,6 +118,7 @@ interface FetchMockOptions {
   activeShopId?: string;
   shops: ShopFixture[];
   shopsFetch?: 'immediate' | 'pending' | 'error';
+  selectShopFetch?: 'immediate' | 'error';
 }
 
 const buildAuth = (role: TestRole, needsShopSelection: boolean, activeShopId?: string) => ({
@@ -120,9 +126,9 @@ const buildAuth = (role: TestRole, needsShopSelection: boolean, activeShopId?: s
   refreshToken: 'refresh-token',
   tokenType: 'Bearer',
   user: {
-    id: role === 'ADMIN' ? 'admin-1' : role === 'MULTI_SHOP_EMPLOYEE' ? 'multi-logged-in' : 'emp-logged-in',
-    username: role === 'ADMIN' ? 'admin' : role === 'MULTI_SHOP_EMPLOYEE' ? 'multi' : 'employee',
-    displayName: role === 'ADMIN' ? 'Admin User' : role === 'MULTI_SHOP_EMPLOYEE' ? 'Multi Shop User' : 'Employee User',
+    id: role === 'ADMIN' ? 'admin-1' : role === 'MANAGER' ? 'manager-logged-in' : 'emp-logged-in',
+    username: role === 'ADMIN' ? 'admin' : role === 'MANAGER' ? 'manager' : 'employee',
+    displayName: role === 'ADMIN' ? 'Admin User' : role === 'MANAGER' ? 'Manager User' : 'Employee User',
     role,
     status: 'ACTIVE',
   },
@@ -135,11 +141,11 @@ const makeFetchMock = (options: FetchMockOptions) => {
   let pendingShopsResolvers: Array<() => void> = [];
 
   const users = [
-    { id: 'emp-1', username: 'anna', displayName: 'Anna', role: 'EMPLOYEE', status: 'ACTIVE' },
+    { id: 'emp-1', username: 'anna', displayName: 'Anna', role: 'EMPLOYEE', status: 'ACTIVE', color: '#60a5fa' },
     {
       id: role === 'ADMIN' ? 'admin-1' : 'emp-logged-in',
-      username: role === 'ADMIN' ? 'admin' : role === 'MULTI_SHOP_EMPLOYEE' ? 'multi' : 'employee',
-      displayName: role === 'ADMIN' ? 'Admin User' : role === 'MULTI_SHOP_EMPLOYEE' ? 'Multi Shop User' : 'Employee User',
+      username: role === 'ADMIN' ? 'admin' : role === 'MANAGER' ? 'manager' : 'employee',
+      displayName: role === 'ADMIN' ? 'Admin User' : role === 'MANAGER' ? 'Manager User' : 'Employee User',
       role,
       status: 'ACTIVE',
     },
@@ -165,6 +171,9 @@ const makeFetchMock = (options: FetchMockOptions) => {
     }
 
     if (url.endsWith('/auth/select-shop') && method === 'POST') {
+      if (options.selectShopFetch === 'error') {
+        return fail('Shop selection unavailable');
+      }
       const body = JSON.parse(String(init?.body ?? '{}')) as { shopId?: string };
       return ok(buildAuth(options.role, false, body.shopId));
     }
@@ -223,7 +232,7 @@ const login = async (container: HTMLElement, role: TestRole) => {
     throw new Error('Login inputs not found');
   }
 
-  await setControlValue(usernameInput, role === 'ADMIN' ? 'admin' : role === 'MULTI_SHOP_EMPLOYEE' ? 'multi' : 'employee');
+  await setControlValue(usernameInput, role === 'ADMIN' ? 'admin' : role === 'MANAGER' ? 'manager' : 'employee');
   await setControlValue(passwordInput, 'admin123');
 
   await act(async () => {
@@ -338,7 +347,7 @@ describe('App shop selection', () => {
       { id: 'shop-1', name: 'Main St' },
       { id: 'shop-2', name: 'Second St' },
     ];
-    const { fetchMock } = makeFetchMock({ role: 'MULTI_SHOP_EMPLOYEE', needsShopSelection: true, shops });
+    const { fetchMock } = makeFetchMock({ role: 'MANAGER', needsShopSelection: true, shops });
     vi.stubGlobal('fetch', fetchMock);
 
     const { container, root } = renderApp();
@@ -346,7 +355,7 @@ describe('App shop selection', () => {
       root.render(React.createElement(I18nProvider, null, React.createElement(App)));
     });
 
-    await login(container, 'MULTI_SHOP_EMPLOYEE');
+    await login(container, 'MANAGER');
     await waitFor(() => container.textContent?.includes('Select a shop') ?? false);
 
     await clickButton(container, 'Second St');
@@ -431,13 +440,14 @@ describe('App shop selection', () => {
     await cleanupRender(root, container);
   });
 
-  it('shows an error message when loading shops fails', async () => {
-    const { fetchMock } = makeFetchMock({
+  it('shows a modal when initial shop loading fails and offers a return-to-sign-in path', async () => {
+    const options: FetchMockOptions = {
       role: 'ADMIN',
       needsShopSelection: true,
       shops: [],
       shopsFetch: 'error',
-    });
+    };
+    const { fetchMock } = makeFetchMock(options);
     vi.stubGlobal('fetch', fetchMock);
 
     const { container, root } = renderApp();
@@ -446,13 +456,133 @@ describe('App shop selection', () => {
     });
 
     await login(container, 'ADMIN');
-    await waitFor(() => container.textContent?.includes('Shops unavailable') ?? false);
+    await waitFor(() => container.querySelector('dialog[open]') !== null);
+    expect(container.querySelector('dialog[open]')?.textContent).toContain('Shops unavailable');
+    await clickButton(container, 'Got it');
+    expect(container.querySelector('.message.error')).toBeNull();
+    expect(findButtonByLabel(container, 'Retry loading shops')).not.toBeNull();
 
-    const errorMessage = Array.from(container.querySelectorAll('p')).find((p) => p.textContent?.includes('Shops unavailable'));
-    expect(errorMessage).toBeDefined();
-    expect(errorMessage?.className).toContain('error');
-    expect(container.querySelectorAll('.shop-option-button').length).toBe(0);
+    await clickButton(container, 'Return to sign in');
+    expect(container.querySelector('form')).not.toBeNull();
+    expect(container.querySelector('.modal-overlay')).toBeNull();
 
+    await cleanupRender(root, container);
+  });
+
+  it('retries a failed shop load without carrying a stale shop selection', async () => {
+    const shops: ShopFixture[] = [{ id: 'shop-2', name: 'Retry destination' }];
+    const options: FetchMockOptions = {
+      role: 'ADMIN',
+      needsShopSelection: true,
+      shops,
+      shopsFetch: 'error',
+    };
+    const { fetchMock } = makeFetchMock(options);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { container, root } = renderApp();
+    await act(async () => {
+      root.render(React.createElement(I18nProvider, null, React.createElement(App)));
+    });
+    await login(container, 'ADMIN');
+    await waitFor(() => container.querySelector('dialog[open]') !== null);
+    await clickButton(container, 'Got it');
+
+    options.shopsFetch = 'immediate';
+    await clickButton(container, 'Retry loading shops');
+    await waitFor(() => findButtonByLabel(container, 'Retry destination') !== null);
+    expect(findButtonByLabel(container, 'Continue')?.disabled).toBe(false);
+    expect(container.querySelector('dialog')).toBeNull();
+
+    await cleanupRender(root, container);
+  });
+
+  it('uses only the modal for a switch-shop loading failure and keeps retry/cancel available', async () => {
+    const options: FetchMockOptions = {
+      role: 'ADMIN',
+      needsShopSelection: false,
+      activeShopId: 'shop-1',
+      shops: [{ id: 'shop-1', name: 'Main St' }, { id: 'shop-2', name: 'Second St' }],
+      shopsFetch: 'immediate',
+    };
+    const { fetchMock } = makeFetchMock(options);
+    vi.stubGlobal('fetch', fetchMock);
+    const { container, root } = renderApp();
+    await act(async () => {
+      root.render(React.createElement(I18nProvider, null, React.createElement(App)));
+    });
+    await login(container, 'ADMIN');
+    await waitFor(() => container.textContent?.includes('Switch shop (Main St)') ?? false);
+
+    options.shopsFetch = 'error';
+    await clickButton(container, 'Switch shop (Main St)');
+    await waitFor(() => container.querySelector('dialog[open]') !== null);
+    expect(container.querySelector('dialog[open]')?.textContent).toContain('Shops unavailable');
+    await clickButton(container, 'Got it');
+    expect(container.querySelector('.message.error')).toBeNull();
+    expect(findButtonByLabel(container, 'Retry loading shops')).not.toBeNull();
+    expect(findButtonByLabel(container, 'Cancel')).not.toBeNull();
+
+    options.shopsFetch = 'immediate';
+    await clickButton(container, 'Retry loading shops');
+    await waitFor(() => findButtonByLabel(container, 'Second St') !== null);
+    await clickButton(container, 'Cancel');
+    expect(container.querySelector('.modal-overlay')).toBeNull();
+    await cleanupRender(root, container);
+  });
+
+  it('shows shop confirmation failures in a modal and keeps the selected shop available to retry', async () => {
+    const options: FetchMockOptions = {
+      role: 'ADMIN',
+      needsShopSelection: true,
+      shops: [{ id: 'shop-1', name: 'Main St' }],
+      selectShopFetch: 'error',
+    };
+    const { fetchMock } = makeFetchMock(options);
+    vi.stubGlobal('fetch', fetchMock);
+    const { container, root } = renderApp();
+    await act(async () => {
+      root.render(React.createElement(I18nProvider, null, React.createElement(App)));
+    });
+    await login(container, 'ADMIN');
+    await waitFor(() => findButtonByLabel(container, 'Continue') !== null);
+    await clickButton(container, 'Continue');
+    await waitFor(() => container.querySelector('dialog[open]') !== null);
+    expect(container.querySelector('dialog[open]')?.textContent).toContain('Shop selection unavailable');
+    await clickButton(container, 'Got it');
+    expect(findButtonByLabel(container, 'Main St')?.className).toContain('active');
+    expect(container.querySelector('.message.error')).toBeNull();
+
+    options.selectShopFetch = 'immediate';
+    await clickButton(container, 'Continue');
+    await waitFor(() => container.textContent?.includes('Signed in as') ?? false);
+    await cleanupRender(root, container);
+  });
+
+  it('uses the active shop id when its name cannot be loaded and recovers on retry', async () => {
+    const options: FetchMockOptions = {
+      role: 'ADMIN',
+      needsShopSelection: false,
+      activeShopId: 'shop-1',
+      shops: [{ id: 'shop-1', name: 'Main St' }],
+      shopsFetch: 'error',
+    };
+    const { fetchMock } = makeFetchMock(options);
+    vi.stubGlobal('fetch', fetchMock);
+    const { container, root } = renderApp();
+    await act(async () => {
+      root.render(React.createElement(I18nProvider, null, React.createElement(App)));
+    });
+    await login(container, 'ADMIN');
+    await waitFor(() => container.textContent?.includes('Could not load shop names') ?? false);
+    expect(container.textContent).toContain('Switch shop (shop-1)');
+    expect(container.textContent).toContain('Signed in as Admin User');
+    expect(container.querySelector('dialog')).toBeNull();
+
+    options.shopsFetch = 'immediate';
+    await clickButton(container, 'Retry');
+    await waitFor(() => container.textContent?.includes('Switch shop (Main St)') ?? false);
+    expect(container.textContent).not.toContain('Could not load shop names');
     await cleanupRender(root, container);
   });
 });

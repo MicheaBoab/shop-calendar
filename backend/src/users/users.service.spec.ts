@@ -1,5 +1,12 @@
-import { AppointmentStatus, UserRole, UserStatus } from '@prisma/client';
+import {
+  AppointmentStatus,
+  Prisma,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import { UsersService } from './users.service';
+import { AuditService } from '../audit/audit.service';
+import { StaffColorsService } from '../staff-colors/staff-colors.service';
 import { requireCurrentShopId } from '../common/shop-context/shop-context';
 import { getPendingAssignmentEmployeeUsernameForShop } from '../common/pending-assignment';
 
@@ -9,34 +16,132 @@ jest.mock('../common/shop-context/shop-context', () => ({
 
 describe('UsersService staff color mapping', () => {
   let service: UsersService;
-  let prismaService: any;
-  let auditService: any;
+  type AsyncMock<Args extends unknown[] = []> = jest.Mock<
+    Promise<unknown>,
+    Args
+  >;
+  const asyncMock = <Args extends unknown[] = []>() =>
+    jest.fn<Promise<unknown>, Args>();
+  type PrismaMock = {
+    $transaction: jest.Mock<
+      Promise<unknown>,
+      [(tx: unknown) => Promise<unknown>]
+    >;
+    user: {
+      findMany: AsyncMock<[Prisma.UserFindManyArgs]>;
+      findFirst: AsyncMock<[Prisma.UserFindFirstArgs]>;
+      create: AsyncMock<[Prisma.UserCreateArgs]>;
+      update: AsyncMock<[Prisma.UserUpdateArgs]>;
+    };
+    appointment: {
+      findMany: AsyncMock;
+      updateMany: AsyncMock<[Prisma.AppointmentUpdateManyArgs]>;
+    };
+    staffColorMap: {
+      findUnique: AsyncMock;
+      create: AsyncMock;
+      upsert: AsyncMock;
+    };
+  };
+  let prismaService: PrismaMock;
+  let auditService: {
+    createAuditContext: jest.MockedFunction<AuditService['createAuditContext']>;
+    recordUserManagementChange: jest.MockedFunction<
+      AuditService['recordUserManagementChange']
+    >;
+  };
+  let basePrismaService: {
+    $transaction: PrismaMock['$transaction'];
+    user: {
+      findMany: AsyncMock<[Prisma.UserFindManyArgs]>;
+      findFirst: PrismaMock['user']['findFirst'];
+    };
+    shop: { findUnique: AsyncMock };
+  };
+  let staffColors: {
+    lock: jest.MockedFunction<StaffColorsService['lock']>;
+    allocate: jest.MockedFunction<StaffColorsService['allocate']>;
+    get: jest.MockedFunction<StaffColorsService['get']>;
+  };
 
   beforeEach(() => {
     prismaService = {
-      $transaction: jest.fn(async (callback: any) => callback(prismaService)),
+      $transaction: jest.fn((callback: (tx: unknown) => Promise<unknown>) =>
+        callback(prismaService),
+      ),
       user: {
-        findMany: jest.fn(),
-        findFirst: jest.fn(),
-        create: jest.fn(),
-        update: jest.fn(),
+        findMany: asyncMock<[Prisma.UserFindManyArgs]>(),
+        findFirst: asyncMock<[Prisma.UserFindFirstArgs]>(),
+        create: asyncMock<[Prisma.UserCreateArgs]>(),
+        update: asyncMock<[Prisma.UserUpdateArgs]>(),
       },
       appointment: {
-        findMany: jest.fn(),
-        updateMany: jest.fn(),
+        findMany: asyncMock(),
+        updateMany: asyncMock<[Prisma.AppointmentUpdateManyArgs]>(),
       },
       staffColorMap: {
-        findUnique: jest.fn(),
-        create: jest.fn(),
-        upsert: jest.fn(),
+        findUnique: asyncMock(),
+        create: asyncMock(),
+        upsert: asyncMock(),
       },
     };
 
     auditService = {
-      recordUserManagementChange: jest.fn().mockResolvedValue(undefined),
+      createAuditContext: jest.fn((actorUserId: string) =>
+        Promise.resolve({
+          actorUserId,
+          shopId: 'prosper',
+          actorSnapshot: { id: actorUserId, role: 'ADMIN' },
+          shopSnapshot: { id: 'prosper', name: 'Prosper' },
+        }),
+      ),
+      recordUserManagementChange: jest
+        .fn<
+          ReturnType<AuditService['recordUserManagementChange']>,
+          Parameters<AuditService['recordUserManagementChange']>
+        >()
+        .mockResolvedValue(undefined),
     };
 
-    service = new UsersService(prismaService, auditService);
+    basePrismaService = {
+      $transaction: prismaService.$transaction,
+      user: {
+        findMany: asyncMock<[Prisma.UserFindManyArgs]>(),
+        findFirst: prismaService.user.findFirst,
+      },
+      shop: { findUnique: asyncMock() },
+    };
+
+    staffColors = {
+      lock: jest
+        .fn<
+          ReturnType<StaffColorsService['lock']>,
+          Parameters<StaffColorsService['lock']>
+        >()
+        .mockResolvedValue(undefined),
+      allocate: jest.fn<
+        ReturnType<StaffColorsService['allocate']>,
+        Parameters<StaffColorsService['allocate']>
+      >((_tx, user) =>
+        Promise.resolve(
+          user.role === UserRole.SHOP_ACCOUNT ? undefined : '#60a5fa',
+        ),
+      ),
+      get: jest
+        .fn<
+          ReturnType<StaffColorsService['get']>,
+          Parameters<StaffColorsService['get']>
+        >()
+        .mockResolvedValue('#60a5fa'),
+    };
+    service = new UsersService(
+      prismaService as unknown as ConstructorParameters<typeof UsersService>[0],
+      auditService as unknown as AuditService,
+      basePrismaService as unknown as ConstructorParameters<
+        typeof UsersService
+      >[2],
+      staffColors as unknown as StaffColorsService,
+    );
     (requireCurrentShopId as jest.Mock).mockReturnValue('prosper');
   });
 
@@ -52,24 +157,29 @@ describe('UsersService staff color mapping', () => {
       updatedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
 
-    // CreateUserDto has no shopId field; cast to any to simulate a tampered payload reaching the service.
+    // Structural extra field simulates a tampered payload, without weakening types.
     const maliciousDto = {
       username: 'bob',
       password: 'secretpw',
       role: UserRole.EMPLOYEE,
       shopId: 'attacker-shop',
-    } as any;
+    };
 
     await service.createUser(maliciousDto, 'admin-1');
 
     expect(prismaService.user.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ shopId: 'prosper' }),
+        data: expect.objectContaining({ shopId: 'prosper' }) as unknown,
       }),
     );
     expect(prismaService.user.create.mock.calls[0][0].data.shopId).not.toBe(
       'attacker-shop',
     );
+    const auditPayload =
+      auditService.recordUserManagementChange.mock.calls[0][0].afterPayload;
+    expect(auditPayload).not.toHaveProperty('passwordHash');
+    expect(auditPayload).not.toHaveProperty('password');
+    expect(auditPayload).not.toHaveProperty('token');
   });
 
   it('resolves the pending-assignment employee scoped to the current shop when removing a user', async () => {
@@ -99,15 +209,16 @@ describe('UsersService staff color mapping', () => {
     await service.removeUser('emp-1', 'admin-1');
 
     const pendingLookupArgs = prismaService.user.findFirst.mock.calls[1][0];
-    expect(pendingLookupArgs.where.username).toBe(
+    expect(pendingLookupArgs.where?.username).toBe(
       getPendingAssignmentEmployeeUsernameForShop('shop-b'),
     );
-    expect(pendingLookupArgs.where.username).not.toBe(
+    expect(pendingLookupArgs.where?.username).not.toBe(
       getPendingAssignmentEmployeeUsernameForShop('prosper'),
     );
   });
 
-  it('reuses a persisted color for the same employee name', async () => {
+  it('returns the persistent identity allocator result', async () => {
+    staffColors.allocate.mockResolvedValue('#123456');
     prismaService.staffColorMap.findUnique.mockResolvedValue({
       color: '#123456',
     });
@@ -131,11 +242,11 @@ describe('UsersService staff color mapping', () => {
       'admin-1',
     );
 
-    expect(created.color).toBe('#123456');
+    expect('color' in created && created.color).toBe('#123456');
     expect(prismaService.staffColorMap.upsert).not.toHaveBeenCalled();
   });
 
-  it('persists the default color when no persisted mapping exists', async () => {
+  it('delegates creation to the locked identity allocator', async () => {
     prismaService.staffColorMap.findUnique.mockResolvedValue(null);
     prismaService.user.create.mockResolvedValue({
       id: 'user-2',
@@ -157,19 +268,22 @@ describe('UsersService staff color mapping', () => {
       'admin-1',
     );
 
-    expect(created.color).toBe('hsl(17 70% 56%)');
-    expect(prismaService.staffColorMap.create).toHaveBeenCalledWith({
-      data: { shopId: 'prosper', staffName: 'alice', color: 'hsl(17 70% 56%)' },
-    });
+    expect('color' in created && created.color).toBe('#60a5fa');
+    expect(staffColors.lock).toHaveBeenCalledWith(prismaService, 'prosper');
+    expect(staffColors.allocate).toHaveBeenCalledWith(
+      prismaService,
+      expect.objectContaining({ id: 'user-2', role: UserRole.EMPLOYEE }),
+      'prosper',
+    );
   });
 
-  it('allows admins to create multi-shop employee accounts', async () => {
+  it('allows admins to create manager accounts', async () => {
     prismaService.staffColorMap.findUnique.mockResolvedValue(null);
     prismaService.user.create.mockResolvedValue({
       id: 'user-3',
-      username: 'multi',
-      displayName: 'Multi',
-      role: UserRole.MULTI_SHOP_EMPLOYEE,
+      username: 'manager',
+      displayName: 'Manager',
+      role: UserRole.MANAGER,
       status: UserStatus.ACTIVE,
       createdAt: new Date('2024-01-01T00:00:00.000Z'),
       updatedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -177,18 +291,110 @@ describe('UsersService staff color mapping', () => {
 
     const created = await service.createUser(
       {
-        username: 'multi',
+        username: 'manager',
         password: 'password123',
-        displayName: 'Multi',
-        role: UserRole.MULTI_SHOP_EMPLOYEE,
+        displayName: 'Manager',
+        role: UserRole.MANAGER,
       },
       'admin-1',
     );
 
     expect(prismaService.user.create.mock.calls[0][0].data.role).toBe(
-      UserRole.MULTI_SHOP_EMPLOYEE,
+      UserRole.MANAGER,
     );
-    expect(created.role).toBe(UserRole.MULTI_SHOP_EMPLOYEE);
+    expect(created.role).toBe(UserRole.MANAGER);
+  });
+
+  it('lists local employees and active managers across shops without shop accounts', async () => {
+    basePrismaService.user.findMany.mockResolvedValue([
+      {
+        id: 'manager-a',
+        username: 'a',
+        displayName: 'Manager A',
+        role: UserRole.MANAGER,
+        status: UserStatus.ACTIVE,
+      },
+      {
+        id: 'employee-a',
+        username: 'e',
+        displayName: 'Employee A',
+        role: UserRole.EMPLOYEE,
+        status: UserStatus.ACTIVE,
+      },
+    ]);
+    prismaService.staffColorMap.findUnique.mockResolvedValue(null);
+
+    const result = await service.listServiceStaff();
+
+    expect(basePrismaService.user.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: UserStatus.ACTIVE,
+          deletedAt: null,
+          OR: [
+            { shopId: 'prosper', role: UserRole.EMPLOYEE },
+            { role: UserRole.MANAGER },
+          ],
+        }) as unknown,
+      }),
+    );
+    expect(result.map((user) => user.role)).toEqual([
+      UserRole.EMPLOYEE,
+      UserRole.MANAGER,
+    ]);
+    expect(result.some((user) => user.role === UserRole.SHOP_ACCOUNT)).toBe(
+      false,
+    );
+  });
+
+  it.each([
+    UserRole.ADMIN,
+    UserRole.MANAGER,
+    UserRole.EMPLOYEE,
+    UserRole.SHOP_ACCOUNT,
+  ])(
+    'includes all active managers in the service-staff roster for %s',
+    async () => {
+      basePrismaService.user.findMany.mockResolvedValue([]);
+
+      await service.listServiceStaff();
+
+      expect(basePrismaService.user.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            OR: [
+              { shopId: 'prosper', role: UserRole.EMPLOYEE },
+              { role: UserRole.MANAGER },
+            ],
+          }) as unknown,
+        }),
+      );
+    },
+  );
+
+  it('does not create a staff color mapping for a shared shop account', async () => {
+    prismaService.user.create.mockResolvedValue({
+      id: 'shared-1',
+      username: 'shop',
+      displayName: 'Shop Login',
+      role: UserRole.SHOP_ACCOUNT,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+    });
+
+    await service.createUser(
+      {
+        username: 'shop',
+        password: 'password123',
+        displayName: 'Shop Login',
+        role: UserRole.SHOP_ACCOUNT,
+      },
+      'admin-1',
+    );
+
+    expect(prismaService.staffColorMap.findUnique).not.toHaveBeenCalled();
+    expect(prismaService.staffColorMap.create).not.toHaveBeenCalled();
   });
 
   it('reassigns only future appointments to pending assignment and leaves historical appointments untouched', async () => {
@@ -230,6 +436,7 @@ describe('UsersService staff color mapping', () => {
     expect(prismaService.appointment.updateMany).toHaveBeenCalledTimes(1);
     expect(prismaService.appointment.updateMany).toHaveBeenCalledWith({
       where: {
+        shopId: 'prosper',
         employeeId: 'employee-1',
         status: AppointmentStatus.SCHEDULED,
         deletedAt: null,
@@ -238,8 +445,8 @@ describe('UsersService staff color mapping', () => {
       data: expect.objectContaining({
         employeeId: 'pending-id',
         employeeDisplayName: 'Alice',
-        employeeColor: 'hsl(17 70% 56%)',
-      }),
+        employeeColor: '#60a5fa',
+      }) as unknown,
     });
 
     jest.useRealTimers();

@@ -6,12 +6,13 @@ import {
   crossesIntoNextDay,
   DEFAULT_APPOINTMENT_DURATION_MINUTES,
   formatDateForUsInput,
+  formatAppointmentTimeInput,
   formatWeekdayFromUsDateInput,
   isAlignedToMinuteGranularity,
   isLocalDateTimeInPast,
-  parseFlexibleTimeInput,
   parseUsDateInput,
   parseDurationMinutes,
+  resolveAppointmentTimeInput,
   shiftUsDateInputByDays,
 } from './appointment-time';
 
@@ -60,48 +61,72 @@ describe('parseDurationMinutes', () => {
   });
 });
 
-describe('parseFlexibleTimeInput', () => {
-  it('parses 24-hour HH:mm inputs', () => {
-    expect(parseFlexibleTimeInput('09:30')).toEqual({ hours: 9, minutes: 30, normalized: '09:30' });
-    expect(parseFlexibleTimeInput('23:05')).toEqual({ hours: 23, minutes: 5, normalized: '23:05' });
-    expect(parseFlexibleTimeInput('14：30')).toEqual({ hours: 14, minutes: 30, normalized: '14:30' });
-  });
+describe('resolveAppointmentTimeInput', () => {
+  const daytimeWindow = { startMinutes: 10 * 60, endMinutes: 20 * 60 };
 
-  it('infers AM/PM for ambiguous 12-hour inputs when a business window is provided', () => {
-    const inferenceWindow = { startMinutes: 10 * 60, endMinutes: (20 * 60) + 30 };
-
-    expect(parseFlexibleTimeInput('2:30', { inferenceWindow })).toEqual({
-      hours: 14,
-      minutes: 30,
-      normalized: '14:30',
-    });
-    expect(parseFlexibleTimeInput('2', { inferenceWindow })).toEqual({
-      hours: 14,
-      minutes: 0,
-      normalized: '14:00',
-    });
-    expect(parseFlexibleTimeInput('10:15', { inferenceWindow })).toEqual({
-      hours: 10,
-      minutes: 15,
-      normalized: '10:15',
+  it.each([
+    ['930', { startMinutes: 10 * 60, endMinutes: 23 * 60 }, 21, 30, '9:30'],
+    ['0930', { startMinutes: 10 * 60, endMinutes: 23 * 60 }, 21, 30, '9:30'],
+    ['230', daytimeWindow, 14, 30, '2:30'],
+    ['1130', daytimeWindow, 11, 30, '11:30'],
+    ['2:30', daytimeWindow, 14, 30, '2:30'],
+    ['2', daytimeWindow, 14, 0, '2:00'],
+    ['10', daytimeWindow, 10, 0, '10:00'],
+    ['1030', daytimeWindow, 10, 30, '10:30'],
+    ['02', daytimeWindow, 14, 0, '2:00'],
+    ['2：30', daytimeWindow, 14, 30, '2:30'],
+  ] as const)('resolves %s to the unique in-window time', (input, window, hours, minutes, normalized) => {
+    expect(resolveAppointmentTimeInput(input, window)).toEqual({
+      status: 'valid',
+      parsed: { hours, minutes, normalized },
     });
   });
 
-  it('rejects AM/PM and Chinese meridiem inputs', () => {
-    expect(parseFlexibleTimeInput('2:30 PM')).toBeNull();
-    expect(parseFlexibleTimeInput('12:00 AM')).toBeNull();
-    expect(parseFlexibleTimeInput('12 PM')).toBeNull();
-    expect(parseFlexibleTimeInput('上午9:15')).toBeNull();
-    expect(parseFlexibleTimeInput('下午2:30')).toBeNull();
-    expect(parseFlexibleTimeInput('下午12:05')).toBeNull();
+  it('resolves 12 as noon or midnight only when the business window uniquely selects it', () => {
+    expect(resolveAppointmentTimeInput('12:30', daytimeWindow)).toEqual({
+      status: 'valid',
+      parsed: { hours: 12, minutes: 30, normalized: '12:30' },
+    });
+    expect(resolveAppointmentTimeInput('12', { startMinutes: 0, endMinutes: 10 * 60 })).toEqual({
+      status: 'valid',
+      parsed: { hours: 0, minutes: 0, normalized: '12:00' },
+    });
   });
 
-  it('returns null for invalid values', () => {
-    expect(parseFlexibleTimeInput('')).toBeNull();
-    expect(parseFlexibleTimeInput('24:00')).toBeNull();
-    expect(parseFlexibleTimeInput('13:00 PM')).toBeNull();
-    expect(parseFlexibleTimeInput('上午0:30')).toBeNull();
-    expect(parseFlexibleTimeInput('random')).toBeNull();
+  it('reports ambiguous and unmatched candidates without guessing', () => {
+    expect(resolveAppointmentTimeInput('9:30', { startMinutes: 8 * 60, endMinutes: 22 * 60 }))
+      .toEqual({ status: 'ambiguous' });
+    expect(resolveAppointmentTimeInput('9:30', daytimeWindow))
+      .toEqual({ status: 'outside-window' });
+  });
+
+  it('uses an inclusive window start and exclusive end', () => {
+    expect(resolveAppointmentTimeInput('10', daytimeWindow)).toEqual({
+      status: 'valid',
+      parsed: { hours: 10, minutes: 0, normalized: '10:00' },
+    });
+    expect(resolveAppointmentTimeInput('12', { startMinutes: 10 * 60, endMinutes: 12 * 60 }))
+      .toEqual({ status: 'outside-window' });
+  });
+
+  it.each(['', '9300', '14', '14:30', '13:00', '0', '12:60', '9:99', '2:30 PM', '12 AM', '上午9:15', 'random'])(
+    'rejects invalid 12-hour input %s',
+    (input) => {
+      expect(resolveAppointmentTimeInput(input, daytimeWindow)).toEqual({ status: 'invalid' });
+    },
+  );
+
+  it('does not parse or guess without a loaded valid business window', () => {
+    expect(resolveAppointmentTimeInput('2:30')).toEqual({ status: 'window-unavailable' });
+    expect(resolveAppointmentTimeInput('2:30', { startMinutes: 20 * 60, endMinutes: 10 * 60 }))
+      .toEqual({ status: 'window-unavailable' });
+  });
+
+  it('formats form times as 12-hour values without AM/PM', () => {
+    expect(formatAppointmentTimeInput(new Date(2026, 6, 30, 0, 5))).toBe('12:05');
+    expect(formatAppointmentTimeInput(new Date(2026, 6, 30, 9, 0))).toBe('9:00');
+    expect(formatAppointmentTimeInput(new Date(2026, 6, 30, 14, 30))).toBe('2:30');
+    expect(formatAppointmentTimeInput(new Date(2026, 6, 30, 23, 59))).toBe('11:59');
   });
 });
 

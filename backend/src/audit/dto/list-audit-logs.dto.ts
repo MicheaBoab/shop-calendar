@@ -15,19 +15,23 @@ export class ListAuditLogsDto {
   @IsOptional()
   limit = 50;
 
-  @Transform(({ value }) => {
+  @Transform(({ value }: { value: unknown }) => {
     if (typeof value !== 'string') {
       return value;
     }
 
     const normalized = value.trim().toLowerCase();
-    if (normalized === 'appointment' || normalized === 'user') {
+    if (
+      normalized === 'appointment' ||
+      normalized === 'user' ||
+      normalized === 'settings'
+    ) {
       return normalized;
     }
 
     return value;
   })
-  @IsIn(['appointment', 'user'])
+  @IsIn(['appointment', 'user', 'settings'])
   @IsOptional()
-  entityType?: 'appointment' | 'user';
+  entityType?: 'appointment' | 'user' | 'settings';
 }

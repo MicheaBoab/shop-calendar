@@ -13,6 +13,8 @@ const futureIso = (hours: number, minutes: number) => {
   date.setUTCHours(hours, minutes, 0, 0);
   return date.toISOString();
 };
+const pastIso = (minutesBack = 60) =>
+  new Date(Date.now() - minutesBack * 60_000).toISOString();
 
 const makeAppointment = (overrides: Record<string, unknown> = {}) => ({
   id: 'appt-1',
@@ -33,9 +35,32 @@ const makeAppointment = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+type SingleResult = {
+  id: string;
+  employeeId: string;
+  phone: string;
+  price: string;
+};
+type GroupResult = {
+  id?: string;
+  groupId: string;
+  pendingCount: number;
+  appointments: Array<{
+    id: string;
+    employeeId: string;
+    price: string;
+    deletedAt: Date | null;
+  }>;
+};
+
 describe('AppointmentsService', () => {
   describe('whole USD prices', () => {
-    const priceService = new AppointmentsService({} as any, {} as any, {} as any);
+    const priceService = new AppointmentsService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
 
     it('stores whole dollars as cents and displays them without decimals', () => {
       expect(priceService['parseUsdToCents']('70')).toBe(7000);
@@ -45,9 +70,14 @@ describe('AppointmentsService', () => {
       expect(priceService['formatCentsToUsd'](7001)).toBe('70.01');
     });
 
-    it.each(['70.00', '70.50', '-1', '1e2', '', '21474837'])('rejects new price %s', (price) => {
-      expect(() => priceService['parseUsdToCents'](price)).toThrow('whole USD amount');
-    });
+    it.each(['70.00', '70.50', '-1', '1e2', '', '21474837'])(
+      'rejects new price %s',
+      (price) => {
+        expect(() => priceService['parseUsdToCents'](price)).toThrow(
+          'whole USD amount',
+        );
+      },
+    );
   });
 
   const prismaService = {
@@ -63,12 +93,14 @@ describe('AppointmentsService', () => {
     staffColorMap: {
       findUnique: jest.fn(),
     },
+    $queryRaw: jest.fn(),
     $transaction: jest.fn(async (callback: (tx: unknown) => unknown) =>
       callback(prismaService),
     ),
   };
 
   const auditService = {
+    createAuditContext: jest.fn(),
     recordAppointmentChange: jest.fn(),
   };
 
@@ -80,11 +112,27 @@ describe('AppointmentsService', () => {
     prismaService,
     auditService as any,
     appointmentsEventsService as any,
+    { get: jest.fn(async () => '#60a5fa') } as any,
   );
 
   beforeEach(() => {
     jest.resetAllMocks();
     (requireCurrentShopId as jest.Mock).mockReturnValue('prosper');
+    prismaService.$queryRaw.mockResolvedValue([
+      {
+        id: 'emp-1',
+        username: 'employee',
+        displayName: 'Employee',
+      },
+    ]);
+    auditService.createAuditContext.mockImplementation(
+      async (actorUserId: string) => ({
+        actorUserId,
+        shopId: 'prosper',
+        actorSnapshot: { id: actorUserId, role: 'EMPLOYEE' },
+        shopSnapshot: { id: 'prosper', name: 'Prosper' },
+      }),
+    );
     prismaService.user.findFirst.mockResolvedValue(null);
     prismaService.$transaction.mockImplementation(
       async (callback: (tx: unknown) => unknown) => callback(prismaService),
@@ -104,17 +152,18 @@ describe('AppointmentsService', () => {
 
     prismaService.appointment.findFirst
       .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(existing)
       .mockResolvedValueOnce(null);
     prismaService.appointment.update.mockResolvedValueOnce(updated);
 
-    const result = await service.updateAppointment('appt-2', {
+    const result = (await service.updateAppointment('appt-2', {
       employeeId: 'emp-3',
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       phone: '3125559999',
       price: '40',
       updatedById: 'employee-1',
-    });
+    })) as SingleResult;
 
     expect(result.employeeId).toBe('emp-3');
     expect(result.phone).toBe('3125559999');
@@ -128,6 +177,8 @@ describe('AppointmentsService', () => {
         actorUserId: 'employee-1',
         action: 'appointment.update',
       }),
+      expect.objectContaining({ actorUserId: 'employee-1' }),
+      expect.anything(),
     );
 
     const auditCall = auditService.recordAppointmentChange.mock.calls[0][0];
@@ -172,66 +223,132 @@ describe('AppointmentsService', () => {
     });
   });
 
-  it.each([false, true])('saves a 45-minute appointment with whole dollars (group: %s)', async (group) => {
-    const startAt = futureIso(15, 0);
-    const endAt = futureIso(15, 45);
-    prismaService.appointment.findFirst.mockResolvedValue(null);
-    prismaService.appointment.create.mockImplementation(async ({ data }: any) => makeAppointment(data));
-    await service.createAppointment({
-      ...(group ? { employeeIds: ['emp-1'], partySize: 1 } : { employeeId: 'emp-1' }),
-      startAt,
-      endAt,
-      phone: '3125551234',
-      price: '70',
-      createdById: 'admin-1',
-    });
-    expect(prismaService.appointment.create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ price: 7000, startAt: new Date(startAt), endAt: new Date(endAt) }),
-    }));
-  });
+  it.each([false, true])(
+    'saves a 45-minute appointment with whole dollars (group: %s)',
+    async (group) => {
+      const startAt = futureIso(15, 0);
+      const endAt = futureIso(15, 45);
+      prismaService.appointment.findFirst.mockResolvedValue(null);
+      prismaService.appointment.create.mockImplementation(
+        async ({ data }: any) => makeAppointment(data),
+      );
+      await service.createAppointment({
+        ...(group
+          ? { employeeIds: ['emp-1'], partySize: 1 }
+          : { employeeId: 'emp-1' }),
+        startAt,
+        endAt,
+        phone: '3125551234',
+        price: '70',
+        createdById: 'admin-1',
+      });
+      expect(prismaService.appointment.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            price: 7000,
+            startAt: new Date(startAt),
+            endAt: new Date(endAt),
+          }),
+        }),
+      );
+    },
+  );
 
-  it.each([false, true])('preserves historical cents when only another field changes (group: %s)', async (group) => {
-    const anchor = makeAppointment({ price: 7050, ...(group ? { groupId: 'historical-group' } : {}) });
-    const pendingMember = makeAppointment({ id: 'pending-appt', employeeId: 'pending-id', groupId: 'historical-group', price: 7001 });
-    prismaService.appointment.findFirst.mockResolvedValueOnce(anchor).mockResolvedValue(null);
-    prismaService.user.findFirst.mockResolvedValue({ id: 'pending-id' });
-    prismaService.appointment.findMany.mockResolvedValue([anchor, pendingMember]);
-    prismaService.appointment.update.mockImplementation(async ({ where, data }: any) => makeAppointment({
-      ...(where.id === anchor.id ? anchor : pendingMember), ...data,
-    }));
-    const startAt = futureIso(15, 0);
-    const endAt = futureIso(15, 45);
-    const result = await service.updateAppointment(anchor.id, {
-      startAt, endAt, note: 'Changed note', updatedById: 'admin-1',
-    });
-    const savedAnchor = group ? result.appointments.find((appointment) => appointment.id === anchor.id) : result;
-    expect(savedAnchor.price).toBe('70.50');
-    expect(prismaService.appointment.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ id: anchor.id }), data: expect.objectContaining({
-        price: 7050, note: 'Changed note', startAt: new Date(startAt), endAt: new Date(endAt),
-      }),
-    }));
-    if (group) {
-      expect(prismaService.appointment.update).toHaveBeenCalledWith(expect.objectContaining({
-        where: expect.objectContaining({ id: pendingMember.id }), data: expect.objectContaining({ price: 7001 }),
-      }));
-    }
-  });
+  it.each([false, true])(
+    'preserves historical cents when only another field changes (group: %s)',
+    async (group) => {
+      const anchor = makeAppointment({
+        price: 7050,
+        ...(group ? { groupId: 'historical-group' } : {}),
+      });
+      const pendingMember = makeAppointment({
+        id: 'pending-appt',
+        employeeId: 'pending-id',
+        groupId: 'historical-group',
+        price: 7001,
+      });
+      if (group) {
+        prismaService.appointment.findFirst
+          .mockResolvedValueOnce(anchor)
+          .mockResolvedValue(null);
+      } else {
+        prismaService.appointment.findFirst
+          .mockResolvedValueOnce(anchor)
+          .mockResolvedValueOnce(anchor)
+          .mockResolvedValue(null);
+      }
+      prismaService.user.findFirst.mockResolvedValue({ id: 'pending-id' });
+      prismaService.appointment.findMany.mockResolvedValue([
+        anchor,
+        pendingMember,
+      ]);
+      prismaService.appointment.update.mockImplementation(
+        async ({ where, data }: any) =>
+          makeAppointment({
+            ...(where.id === anchor.id ? anchor : pendingMember),
+            ...data,
+          }),
+      );
+      const startAt = futureIso(15, 0);
+      const endAt = futureIso(15, 45);
+      const result = await service.updateAppointment(anchor.id, {
+        startAt,
+        endAt,
+        note: 'Changed note',
+        updatedById: 'admin-1',
+      });
+      const savedAnchor = group
+        ? (result as GroupResult).appointments.find(
+            (appointment) => appointment.id === anchor.id,
+          )
+        : (result as SingleResult);
+      expect(savedAnchor?.price).toBe('70.50');
+      expect(prismaService.appointment.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: anchor.id }),
+          data: expect.objectContaining({
+            price: 7050,
+            note: 'Changed note',
+            startAt: new Date(startAt),
+            endAt: new Date(endAt),
+          }),
+        }),
+      );
+      if (group) {
+        expect(prismaService.appointment.update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({ id: pendingMember.id }),
+            data: expect.objectContaining({ price: 7001 }),
+          }),
+        );
+      }
+    },
+  );
 
   it('replaces a historical fractional price only when a whole-dollar price is submitted', async () => {
     const existing = makeAppointment({ price: 7050 });
-    prismaService.appointment.findFirst.mockResolvedValueOnce(existing).mockResolvedValue(null);
-    prismaService.appointment.update.mockImplementation(async ({ data }: any) => makeAppointment({
-      ...existing, ...data,
-    }));
+    prismaService.appointment.findFirst
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValue(null);
+    prismaService.appointment.update.mockImplementation(async ({ data }: any) =>
+      makeAppointment({
+        ...existing,
+        ...data,
+      }),
+    );
 
-    const result = await service.updateAppointment(existing.id, {
-      price: '70', updatedById: 'admin-1', userRole: 'ADMIN',
-    });
+    const result = (await service.updateAppointment(existing.id, {
+      price: '70',
+      updatedById: 'admin-1',
+      userRole: 'ADMIN',
+    })) as SingleResult;
 
-    expect(prismaService.appointment.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ price: 7000 }),
-    }));
+    expect(prismaService.appointment.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ price: 7000 }),
+      }),
+    );
     expect(result.price).toBe('70');
   });
 
@@ -289,6 +406,8 @@ describe('AppointmentsService', () => {
 
     prismaService.appointment.findFirst
       .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(makeAppointment({ id: 'appt-4' }))
       .mockResolvedValueOnce(makeAppointment({ id: 'appt-4' }));
     prismaService.appointment.update
       .mockResolvedValueOnce(cancelled)
@@ -386,7 +505,7 @@ describe('AppointmentsService', () => {
     expect(prismaService.appointment.update).not.toHaveBeenCalled();
   });
 
-  it('still allows deleteAppointment (admin hard delete) on an already cancelled appointment', async () => {
+  it('allows admins to soft-delete an already-cancelled appointment', async () => {
     const existing = makeAppointment({
       id: 'appt-cancelled-delete',
       status: AppointmentStatus.CANCELLED,
@@ -396,7 +515,9 @@ describe('AppointmentsService', () => {
       status: AppointmentStatus.CANCELLED,
       deletedAt: new Date('2026-07-28T12:00:00.000Z'),
     });
-    prismaService.appointment.findFirst.mockResolvedValueOnce(existing);
+    prismaService.appointment.findFirst
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(existing);
     prismaService.appointment.update.mockResolvedValueOnce(deleted);
 
     const result = await service.deleteAppointment(
@@ -434,7 +555,9 @@ describe('AppointmentsService', () => {
       updatedById: 'employee-2',
     });
 
-    prismaService.appointment.findFirst.mockResolvedValueOnce(first);
+    prismaService.appointment.findFirst
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(first);
     prismaService.appointment.findMany.mockResolvedValueOnce([first, second]);
     prismaService.appointment.update
       .mockResolvedValueOnce(firstCancelled)
@@ -467,6 +590,8 @@ describe('AppointmentsService', () => {
           appointmentIds: ['appt-5', 'appt-6'],
         }),
       }),
+      expect.objectContaining({ actorUserId: 'employee-2' }),
+      expect.anything(),
     );
   });
 
@@ -499,7 +624,9 @@ describe('AppointmentsService', () => {
       deletedAt,
     });
 
-    prismaService.appointment.findFirst.mockResolvedValueOnce(first);
+    prismaService.appointment.findFirst
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(first);
     prismaService.appointment.findMany.mockResolvedValueOnce([first, second]);
     prismaService.appointment.update
       .mockResolvedValueOnce(firstDeleted)
@@ -532,6 +659,8 @@ describe('AppointmentsService', () => {
           appointmentIds: ['appt-7', 'appt-8'],
         }),
       }),
+      expect.objectContaining({ actorUserId: 'admin-9' }),
+      expect.anything(),
     );
   });
 
@@ -557,14 +686,14 @@ describe('AppointmentsService', () => {
     );
     prismaService.appointment.create.mockResolvedValueOnce(created);
 
-    const result = await service.createAppointment({
+    const result = (await service.createAppointment({
       employeeId: 'emp-1',
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       phone: '3125551234',
       price: '25',
       createdById: 'admin-1',
-    });
+    })) as SingleResult;
 
     expect(result.id).toBe('appt-new');
     expect(prismaService.appointment.create).toHaveBeenCalledWith(
@@ -597,14 +726,14 @@ describe('AppointmentsService', () => {
     prismaService.appointment.findFirst.mockResolvedValueOnce(null);
     prismaService.appointment.create.mockResolvedValueOnce(created);
 
-    const result = await service.createAppointment({
+    const result = (await service.createAppointment({
       employeeId: 'emp-1',
       startAt: futureIso(15, 15),
       endAt: futureIso(15, 45),
       phone: '3125551234',
       price: '25',
       createdById: 'admin-1',
-    });
+    })) as SingleResult;
 
     expect(result.id).toBe('appt-minute');
     expect(
@@ -618,7 +747,6 @@ describe('AppointmentsService', () => {
     prismaService.appointment.findFirst.mockResolvedValueOnce({
       id: 'conflict-1',
     });
-
     await expect(
       service.createAppointment({
         employeeId: 'emp-1',
@@ -636,19 +764,213 @@ describe('AppointmentsService', () => {
     ).not.toHaveBeenCalled();
   });
 
+  it('rejects an employee who is inactive, deleted, or belongs to another shop using the transaction qualification query', async () => {
+    prismaService.appointment.findFirst.mockResolvedValue(null);
+    prismaService.$queryRaw.mockResolvedValueOnce([]);
+
+    await expect(
+      service.createAppointment({
+        employeeId: 'foreign-employee',
+        startAt: futureIso(15, 0),
+        endAt: futureIso(16, 0),
+        phone: '3125551234',
+        price: '25',
+        createdById: 'admin-1',
+      }),
+    ).rejects.toThrow('Selected service staff must be active and eligible');
+
+    const [query] = prismaService.$queryRaw.mock.calls[0];
+    expect(query.join('')).toContain("status::text = 'active'");
+    expect(query.join('')).toContain("role::text = 'manager'");
+    expect(query.join('')).toContain("role::text = 'employee'");
+    expect(query.join('')).toContain('AND shop_id =');
+    expect(query.join('')).toContain('FOR SHARE');
+    expect(prismaService.$queryRaw.mock.calls[0].slice(1)).toEqual([
+      'foreign-employee',
+      'prosper',
+    ]);
+    expect(prismaService.appointment.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['ADMIN', 'MANAGER', 'EMPLOYEE', 'SHOP_ACCOUNT'] as const)(
+    'allows %s to assign an active manager from another shop',
+    async (userRole) => {
+      prismaService.appointment.findFirst.mockResolvedValue(null);
+      prismaService.$queryRaw.mockResolvedValueOnce([
+        {
+          id: 'manager-foreign',
+          username: 'manager.other',
+          displayName: 'Manager Other',
+        },
+      ]);
+      prismaService.appointment.create.mockResolvedValue(
+        makeAppointment({
+          id: 'manager-assigned',
+          employeeId: 'manager-foreign',
+          employeeDisplayName: 'Manager Other',
+        }),
+      );
+
+      await service.createAppointment({
+        employeeId: 'manager-foreign',
+        startAt: futureIso(15, 0),
+        endAt: futureIso(16, 0),
+        phone: '3125551234',
+        price: '25',
+        createdById: 'manager-1',
+        userRole,
+      });
+
+      expect(prismaService.$queryRaw.mock.calls[0].slice(1)).toEqual([
+        'manager-foreign',
+        'prosper',
+      ]);
+      expect(prismaService.appointment.create.mock.calls[0][0].data).toEqual(
+        expect.objectContaining({
+          employeeId: 'manager-foreign',
+          employeeDisplayName: 'Manager Other',
+        }),
+      );
+    },
+  );
+
+  it.each(['EMPLOYEE', 'SHOP_ACCOUNT'] as const)(
+    'rejects new past appointments for %s',
+    async (userRole) => {
+      await expect(
+        service.createAppointment({
+          employeeId: 'emp-1',
+          startAt: pastIso(),
+          endAt: new Date(Date.now() + 30_000).toISOString(),
+          phone: '3125551234',
+          price: '25',
+          createdById: 'user-1',
+          userRole,
+        }),
+      ).rejects.toThrow('Cannot schedule appointment to a past time');
+      expect(prismaService.appointment.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['ADMIN', 'MANAGER'] as const)(
+    'allows %s to create past appointments',
+    async (userRole) => {
+      const created = makeAppointment({ id: 'past-created' });
+      prismaService.appointment.findFirst.mockResolvedValue(null);
+      prismaService.appointment.create.mockResolvedValue(created);
+
+      await expect(
+        service.createAppointment({
+          employeeId: 'emp-1',
+          startAt: pastIso(90),
+          endAt: pastIso(30),
+          phone: '3125551234',
+          price: '25',
+          createdById: userRole === 'ADMIN' ? 'admin-1' : 'manager-1',
+          userRole,
+        }),
+      ).resolves.toMatchObject({ id: 'past-created' });
+      expect(prismaService.$queryRaw.mock.calls[0].slice(1)).toEqual([
+        'emp-1',
+        'prosper',
+      ]);
+    },
+  );
+
+  it('allows employees to edit an existing appointment into the past', async () => {
+    const existing = makeAppointment({
+      startAt: new Date(pastIso(120)),
+      endAt: new Date(pastIso(60)),
+    });
+    prismaService.appointment.findFirst
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(null);
+    prismaService.appointment.update.mockImplementation(async ({ data }: any) =>
+      makeAppointment({ ...existing, ...data }),
+    );
+
+    await expect(
+      service.updateAppointment(existing.id, {
+        startAt: pastIso(90),
+        endAt: pastIso(30),
+        updatedById: 'employee-1',
+        userRole: 'EMPLOYEE',
+      }),
+    ).resolves.toMatchObject({ startAt: expect.any(Date) });
+  });
+
+  it('lets employees edit existing shop appointments without requalifying a historical manager assignment', async () => {
+    const existing = makeAppointment({
+      employeeId: 'manager-from-another-shop',
+      employeeDisplayName: 'Cross-shop Manager',
+    });
+    prismaService.appointment.findFirst
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(existing)
+      .mockResolvedValueOnce(null);
+    prismaService.appointment.update.mockImplementation(async ({ data }: any) =>
+      makeAppointment({ ...existing, ...data }),
+    );
+
+    await expect(
+      service.updateAppointment(existing.id, {
+        note: 'Edited by local employee',
+        updatedById: 'employee-1',
+        userRole: 'EMPLOYEE',
+      }),
+    ).resolves.toMatchObject({ employeeId: 'manager-from-another-shop' });
+    expect(prismaService.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('keeps audit failure inside the appointment transaction and does not publish SSE', async () => {
+    let transactionOpen = false;
+    prismaService.$transaction.mockImplementation(
+      async (callback: (tx: unknown) => unknown) => {
+        transactionOpen = true;
+        try {
+          return await callback(prismaService);
+        } finally {
+          transactionOpen = false;
+        }
+      },
+    );
+    prismaService.appointment.findFirst.mockResolvedValue(null);
+    prismaService.appointment.create.mockResolvedValue(makeAppointment());
+    auditService.recordAppointmentChange.mockImplementation(async () => {
+      expect(transactionOpen).toBe(true);
+      throw new Error('audit unavailable');
+    });
+
+    await expect(
+      service.createAppointment({
+        employeeId: 'emp-1',
+        startAt: futureIso(15, 0),
+        endAt: futureIso(16, 0),
+        phone: '3125551234',
+        price: '25',
+        createdById: 'admin-1',
+      }),
+    ).rejects.toThrow('audit unavailable');
+    expect(
+      appointmentsEventsService.publishAppointmentsChanged,
+    ).not.toHaveBeenCalled();
+    expect(transactionOpen).toBe(false);
+  });
+
   it('skips overlap checks for pending assignment employee', async () => {
     const created = makeAppointment({ id: 'appt-pending' });
     prismaService.user.findFirst.mockResolvedValueOnce({ id: 'pending-id' });
     prismaService.appointment.create.mockResolvedValueOnce(created);
 
-    const result = await service.createAppointment({
+    const result = (await service.createAppointment({
       employeeId: 'pending-id',
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       phone: '3125551234',
       price: '25',
       createdById: 'admin-1',
-    });
+    })) as SingleResult;
 
     expect(result.id).toBe('appt-pending');
     expect(prismaService.appointment.findFirst).not.toHaveBeenCalled();
@@ -689,7 +1011,7 @@ describe('AppointmentsService', () => {
         }),
       );
 
-    const result = await service.createAppointment({
+    const result = (await service.createAppointment({
       employeeIds: ['emp-1', 'emp-2'],
       partySize: 3,
       startAt: futureIso(15, 0),
@@ -697,7 +1019,7 @@ describe('AppointmentsService', () => {
       phone: '3125551234',
       price: '25',
       createdById: 'admin-1',
-    });
+    })) as GroupResult;
 
     expect(result.pendingCount).toBe(1);
     expect(result.appointments).toHaveLength(3);
@@ -752,7 +1074,7 @@ describe('AppointmentsService', () => {
         }),
       );
 
-    const result = await service.createAppointment({
+    const result = (await service.createAppointment({
       employeeIds: ['pending-id', 'pending-id'],
       partySize: 3,
       startAt: futureIso(15, 0),
@@ -760,7 +1082,7 @@ describe('AppointmentsService', () => {
       phone: '3125551234',
       price: '25',
       createdById: 'admin-1',
-    });
+    })) as GroupResult;
 
     expect(result.pendingCount).toBe(3);
     expect(result.appointments).toHaveLength(3);
@@ -852,13 +1174,13 @@ describe('AppointmentsService', () => {
       }),
     );
 
-    const result = await service.updateAppointment('appt-1', {
+    const result = (await service.updateAppointment('appt-1', {
       employeeIds: ['emp-1', 'emp-3'],
       partySize: 2,
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       updatedById: 'admin-1',
-    });
+    })) as GroupResult;
 
     expect(result.groupId).toBe('group-1');
     expect(result.pendingCount).toBe(0);
@@ -908,13 +1230,13 @@ describe('AppointmentsService', () => {
       }),
     );
 
-    const result = await service.updateAppointment('appt-1', {
+    const result = (await service.updateAppointment('appt-1', {
       employeeIds: ['pending-id', 'pending-id'],
       partySize: 3,
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       updatedById: 'admin-1',
-    });
+    })) as GroupResult;
 
     expect(result.groupId).toBe('group-pending');
     expect(result.pendingCount).toBe(3);
@@ -971,12 +1293,12 @@ describe('AppointmentsService', () => {
       }),
     );
 
-    const result = await service.updateAppointment('appt-1', {
+    const result = (await service.updateAppointment('appt-1', {
       employeeId: 'emp-3',
       startAt: futureIso(15, 0),
       endAt: futureIso(16, 0),
       updatedById: 'employee-1',
-    });
+    })) as GroupResult;
 
     expect(result.groupId).toBe('group-employee');
     expect(
@@ -999,6 +1321,8 @@ describe('AppointmentsService', () => {
         action: 'appointment.update',
         entityId: 'group-employee',
       }),
+      expect.objectContaining({ actorUserId: 'employee-1' }),
+      expect.anything(),
     );
   });
 
@@ -1035,6 +1359,8 @@ describe('AppointmentsService', () => {
         action: 'appointment.move',
         entityId: 'group-move',
       }),
+      expect.objectContaining({ actorUserId: 'employee-1' }),
+      expect.anything(),
     );
   });
 });

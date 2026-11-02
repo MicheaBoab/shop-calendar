@@ -42,6 +42,23 @@ describe('i18n provider', () => {
     expect(getInitialLocale()).toBe('zh-CN');
   });
 
+  it('uses business-hours wording consistently in both locales', () => {
+    expect(messages.en['admin.calendarWindow']).toBe('Business hours');
+    expect(messages.en['admin.startTime']).toBe('Opening time');
+    expect(messages.en['admin.endTime']).toBe('Closing time');
+    expect(messages.en['admin.saveCalendarWindow']).toBe('Save business hours');
+    expect(messages.en['notices.windowSaved']).toContain('Business hours');
+    expect(messages.en['notices.windowSaveFailed']).toContain('Business hours');
+    expect(messages.en['notices.calendarWindowUnavailable']).toContain('Business hours');
+    expect(messages['zh-CN']['admin.calendarWindow']).toBe('营业时间');
+    expect(messages['zh-CN']['admin.startTime']).toBe('营业开始时间');
+    expect(messages['zh-CN']['admin.endTime']).toBe('营业结束时间');
+    expect(messages['zh-CN']['admin.saveCalendarWindow']).toBe('保存营业时间');
+    expect(messages['zh-CN']['notices.windowSaved']).toContain('营业时间');
+    expect(messages['zh-CN']['notices.windowSaveFailed']).toContain('营业时间');
+    expect(messages['zh-CN']['notices.calendarWindowUnavailable']).toContain('营业时间');
+  });
+
   it('persists selected locale to localStorage', async () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
@@ -67,6 +84,15 @@ describe('i18n provider', () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it('uses numeric-only examples and explains business-hour inference in both locales', () => {
+    expect(messages.en['editor.startTimePlaceholder']).toBe('e.g. 2, 230, 930, 1030');
+    expect(messages['zh-CN']['editor.startTimePlaceholder']).toBe('例如：2、230、930、1030');
+    expect(messages.en['editor.startTimeHint']).toContain('digits only (no colon)');
+    expect(messages.en['editor.startTimeHint']).toContain('12-hour');
+    expect(messages['zh-CN']['editor.startTimeHint']).toContain('只输入数字（不输入冒号）');
+    expect(messages['zh-CN']['editor.startTimeHint']).toContain('营业时间推断');
   });
 
   it('falls back to english when a zh key is missing', async () => {

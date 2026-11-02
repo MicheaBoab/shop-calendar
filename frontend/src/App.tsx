@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { OperationErrorDialog } from './OperationErrorDialog';
+import { NativeDateChooser } from './NativeDateChooser';
+import { getAuditPresentation } from './audit-presentation';
+import { assertPersistedStaffColors } from './staff-colors';
+import { CalendarEventBox, CalendarFrame, formatTimeOnly } from './calendar-presentation';
 import FullCalendar from '@fullcalendar/react';
 import timeGridPlugin from '@fullcalendar/timegrid';
 import interactionPlugin, { DateClickArg } from '@fullcalendar/interaction';
@@ -10,24 +15,31 @@ import {
   computeEndFromDuration,
   crossesIntoNextDay,
   DEFAULT_APPOINTMENT_DURATION_MINUTES,
+  formatAppointmentTimeInput,
   formatDateForUsInput,
   formatWeekdayFromUsDateInput,
   isLocalDateTimeInPast,
+  type AppointmentTimeResolution,
   type ParsedFlexibleTimeInput,
-  parseFlexibleTimeInput,
   parseDurationMinutes,
   parseUsDateInput,
+  resolveAppointmentTimeInput,
 } from './appointment-time';
 import {
   CALENDAR_SLOT_MAX_TIME,
   CALENDAR_SLOT_MIN_TIME,
+  deriveCalendarDisplayWindow,
+  isCalendarStartWithinBusinessHours,
+  isValidCalendarWindowRange,
   normalizeCalendarWindowSettings,
   toCalendarTimeInputValue,
   toCalendarTimePayloadValue,
 } from './calendar-time-window';
 import {
+  applyPhoneInputEdit,
   formatPhoneForDisplay,
   normalizePhoneInput,
+  reconcilePhoneInputValue,
 } from './phone-format';
 import {
   DEFAULT_PENDING_EMPLOYEE_COLOR,
@@ -41,6 +53,7 @@ import {
   MOBILE_CALENDAR_BREAKPOINT_PX,
 } from './calendar-ui-logic';
 import { useI18n } from './i18n/i18n';
+import type { MessageKey } from './i18n/messages';
 
 interface UserSummary {
   id: string;
@@ -128,6 +141,9 @@ interface AuditLogRecord {
   createdAt: string;
   beforePayload: unknown;
   afterPayload: unknown;
+  actorSnapshot?: unknown;
+  shopSnapshot?: unknown;
+  shop?: { id: string; name: string };
   actor: {
     id: string;
     username: string;
@@ -144,12 +160,13 @@ interface AuditLogsResponse {
 }
 
 type MessageTone = 'info' | 'success' | 'error';
+type ReadErrorKey = 'users' | 'appointments' | 'calendarWindow' | 'auditLogs' | 'shopNames';
 type UserStatusValue = 'ACTIVE' | 'INACTIVE';
 type AdminPanel = 'calendar' | 'overview' | 'admin' | 'logs';
 type TodayAgendaMode = 'time' | 'employee';
 type CalendarView = 'timeGridWeek' | 'timeGridThreeDay' | 'timeGridDay';
-type UserRoleValue = 'ADMIN' | 'EMPLOYEE' | 'MULTI_SHOP_EMPLOYEE';
-type ManagedUserRoleValue = 'EMPLOYEE' | 'MULTI_SHOP_EMPLOYEE';
+type UserRoleValue = 'ADMIN' | 'EMPLOYEE' | 'MANAGER' | 'SHOP_ACCOUNT';
+type ManagedUserRoleValue = 'EMPLOYEE' | 'MANAGER' | 'SHOP_ACCOUNT';
 const DURATION_QUICK_SELECT_MINUTES = [30, 45, 60, 75, 90, 120] as const;
 
 const API_BASE_URL = resolveApiBaseUrl({
@@ -158,11 +175,33 @@ const API_BASE_URL = resolveApiBaseUrl({
   protocol: typeof window !== 'undefined' ? window.location.protocol : undefined,
 });
 const AUTH_STORAGE_KEY = 'shop-calendar-auth';
-const EMPLOYEE_MANAGED_ROLES: ManagedUserRoleValue[] = ['EMPLOYEE', 'MULTI_SHOP_EMPLOYEE'];
+const EMPLOYEE_MANAGED_ROLES: ManagedUserRoleValue[] = ['EMPLOYEE', 'MANAGER', 'SHOP_ACCOUNT'];
+const AUDIT_ACTION_MESSAGES: Record<string, MessageKey> = {
+  'appointment.create': 'logs.action.appointment.create',
+  'appointment.update': 'logs.action.appointment.update',
+  'appointment.move': 'logs.action.appointment.move',
+  'appointment.cancel': 'logs.action.appointment.cancel',
+  'appointment.delete': 'logs.action.appointment.delete',
+  'user.create': 'logs.action.user.create',
+  'user.status.update': 'logs.action.user.status.update',
+  'user.password.update': 'logs.action.user.password.update',
+  'user.remove': 'logs.action.user.remove',
+  'settings.calendar-window.update': 'logs.action.settings.calendar-window.update',
+};
+const ROLE_MESSAGES: Record<string, MessageKey> = {
+  ADMIN: 'role.ADMIN',
+  MANAGER: 'role.MANAGER',
+  EMPLOYEE: 'role.EMPLOYEE',
+  SHOP_ACCOUNT: 'role.SHOP_ACCOUNT',
+};
 
 const isAdminRole = (role: string) => role === 'ADMIN';
-const canSwitchShopRole = (role: string) => role === 'ADMIN' || role === 'MULTI_SHOP_EMPLOYEE';
-const isEmployeeLikeRole = (role: string) => role === 'EMPLOYEE' || role === 'MULTI_SHOP_EMPLOYEE';
+const isManagerRole = (role: string) => role === 'MANAGER';
+const canManageAppointmentsRole = (role: string) => isAdminRole(role) || isManagerRole(role);
+const canSwitchShopRole = (role: string) => isAdminRole(role) || isManagerRole(role);
+const isEmployeeLikeRole = (role: string) => role === 'EMPLOYEE' || isManagerRole(role);
+const isUnknownRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
 
 const isAuthResponse = (value: unknown): value is AuthResponse => {
   if (!value || typeof value !== 'object') {
@@ -248,6 +287,7 @@ const hashStringToHue = (value: string) => {
   return Math.abs(hash) % 360;
 };
 
+// Legacy orphaned appointment IDs only; current staff must have persisted API colors.
 const colorFromStableIdentifier = (identifier: string) => {
   const hue = hashStringToHue(identifier);
   return `hsl(${hue} 70% 56%)`;
@@ -288,12 +328,6 @@ const isSameLocalDate = (left: Date, right: Date) => {
     && left.getDate() === right.getDate();
 };
 
-const formatTimeOnlyForInput = (value: Date) => {
-  const hours = String(value.getHours()).padStart(2, '0');
-  const minutes = String(value.getMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
-};
-
 const parseClockToMinutes = (value: string) => {
   const match = /^(\d{2}):(\d{2})/.exec(value.trim());
   if (!match) {
@@ -312,7 +346,7 @@ const parseClockToMinutes = (value: string) => {
 const buildLocalDateTime = (
   dateValue: string,
   timeValue: string,
-  parseTime: (value: string) => ParsedFlexibleTimeInput | null = parseFlexibleTimeInput,
+  parseTime: (value: string) => ParsedFlexibleTimeInput | null,
 ) => {
   if (!dateValue || !timeValue) {
     return null;
@@ -340,22 +374,33 @@ const buildLocalDateTime = (
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
-const formatTimeOnly = (value: string, locale: string) => {
-  const formatter = new Intl.DateTimeFormat(locale, {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  return formatter.format(new Date(value));
+const preserveAppointmentTimeForDate = (dateValue: string, originalStartAt: Date) => {
+  const parsedDate = parseUsDateInput(dateValue);
+  if (!parsedDate) {
+    return null;
+  }
+
+  if (
+    parsedDate.getFullYear() === originalStartAt.getFullYear()
+    && parsedDate.getMonth() === originalStartAt.getMonth()
+    && parsedDate.getDate() === originalStartAt.getDate()
+  ) {
+    return new Date(originalStartAt);
+  }
+
+  return new Date(
+    parsedDate.getFullYear(),
+    parsedDate.getMonth(),
+    parsedDate.getDate(),
+    originalStartAt.getHours(),
+    originalStartAt.getMinutes(),
+    0,
+    0,
+  );
 };
 
 const formatAgendaTimeRange = (startAt: string, endAt: string, locale: string) => {
-  const formatter = new Intl.DateTimeFormat(locale, {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  return `${formatter.format(new Date(startAt))} - ${formatter.format(new Date(endAt))}`;
+  return `${formatTimeOnly(startAt, locale)} - ${formatTimeOnly(endAt, locale)}`;
 };
 
 const formatDateTimeForPreview = (value: Date, locale: string) => {
@@ -372,20 +417,6 @@ const getInitialCalendarView = (): CalendarView => {
     return getInitialCalendarViewForWidth(undefined);
   }
   return getInitialCalendarViewForWidth(window.innerWidth);
-};
-
-const formatRelativeToToday = (days: number) => {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return formatDateForUsInput(date);
-};
-
-const incrementUsDateInputByDays = (input: string, days: number) => {
-  const parsed = parseUsDateInput(input);
-  const base = parsed ?? new Date();
-  const next = new Date(base);
-  next.setDate(base.getDate() + days);
-  return formatDateForUsInput(next);
 };
 
 const EVENT_NOTE_KEYS = ['note', 'remark', 'description', 'memo', 'comment'] as const;
@@ -623,19 +654,103 @@ const bindCalendarEventNoteTooltip = (
   };
 };
 
+function FieldHelp({ id, text, label }: { id: string; text: string; label: string }) {
+  const [open, setOpen] = useState(false);
+  const host = useRef<HTMLSpanElement>(null);
+  // Pointer focus must not open just before click toggles it closed.
+  const pointerFocus = useRef(false);
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      if (!host.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [open]);
+  return (
+    <span className="start-time-help" ref={host}
+      onPointerEnter={(event) => { if (event.pointerType === 'mouse') setOpen(true); }}
+      onPointerLeave={(event) => {
+        if (event.pointerType === 'mouse' && !host.current?.contains(document.activeElement)) setOpen(false);
+      }}>
+      <button type="button" className="start-time-help-button" aria-label={label}
+        aria-expanded={open} aria-controls={id}
+        aria-describedby={open ? id : undefined}
+        onPointerDown={() => { pointerFocus.current = true; }}
+        onMouseDown={(event) => event.preventDefault()}
+        onFocus={() => { if (!pointerFocus.current) setOpen(true); }}
+        onBlur={() => setOpen(false)}
+        onClick={() => { pointerFocus.current = false; setOpen((value) => !value); }}>
+        ⓘ
+      </button>
+      <span id={id} role="tooltip" className="start-time-help-content" hidden={!open}>{text}</span>
+    </span>
+  );
+}
+
+const startTimeErrorKey = (status: Exclude<AppointmentTimeResolution['status'], 'valid'>): MessageKey => (
+  status === 'window-unavailable' ? 'notices.calendarWindowUnavailable'
+    : status === 'ambiguous' ? 'notices.startTimeAmbiguous'
+      : status === 'outside-window' ? 'notices.startTimeOutsideWindow'
+        : 'notices.startTimeInvalid'
+);
+
 function App() {
   const { locale, setLocale, t } = useI18n();
   const initialStoredAuthRef = useRef<AuthResponse | null>(readStoredAuth());
   const [auth, setAuth] = useState<AuthResponse | null>(() => initialStoredAuthRef.current);
   const [isAuthBootstrapping, setIsAuthBootstrapping] = useState(() => initialStoredAuthRef.current !== null);
   const [users, setUsers] = useState<UserRecord[]>([]);
+  const [adminUsers, setAdminUsers] = useState<UserRecord[]>([]);
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
   const [form, setForm] = useState<AppointmentFormState>(() => createInitialForm());
   const [editingId, setEditingId] = useState<string | null>(null);
+  const originalEditingStartAtRef = useRef<Date | null>(null);
+  const appointmentStartTimeEditedRef = useRef(false);
+  const [startTimeError, setStartTimeError] = useState<MessageKey | null>(null);
+  const rejectedStartTimeInputRef = useRef(false);
+  const clearStartTimeError = useCallback(() => {
+    rejectedStartTimeInputRef.current = false;
+    setStartTimeError(null);
+  }, []);
+  const rejectStartTimeInput = () => {
+    rejectedStartTimeInputRef.current = true;
+    setStartTimeError('notices.startTimeInvalid');
+  };
   const [originalEditingPrice, setOriginalEditingPrice] = useState('');
   const [loading, setLoading] = useState(false);
+  const [operationErrors, setOperationErrors] = useState<string[]>([]);
+  const operationErrorsRef = useRef<string[]>([]);
+  const operationError = operationErrors[0] ?? '';
+  const showOperationError = useCallback((text: string) => {
+    if (sessionExpiredRef.current || text === t('notices.sessionExpired')) {
+      return;
+    }
+    if (operationErrorsRef.current.includes(text)) {
+      return;
+    }
+    const next = [...operationErrorsRef.current, text];
+    operationErrorsRef.current = next;
+    setOperationErrors(next);
+  }, [t]);
+  const closeOperationError = useCallback(() => {
+    const next = operationErrorsRef.current.slice(1);
+    operationErrorsRef.current = next;
+    setOperationErrors(next);
+  }, []);
+
   const [message, setMessage] = useState<string>('');
   const [messageTone, setMessageTone] = useState<MessageTone>('info');
+  const [readErrors, setReadErrors] = useState<Record<string, string>>({});
+  const [phoneLookupError, setPhoneLookupError] = useState<{ phone: string; shopId: string | null; message: string } | null>(null);
+  const [phoneLookupRetry, setPhoneLookupRetry] = useState(0);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [adminCreateUserForm, setAdminCreateUserForm] = useState<AdminCreateUserFormState>(() => createInitialAdminCreateUserForm());
   const [passwordResetTargetUserId, setPasswordResetTargetUserId] = useState('');
@@ -649,13 +764,19 @@ function App() {
     slotMinTime: CALENDAR_SLOT_MIN_TIME,
     slotMaxTime: CALENDAR_SLOT_MAX_TIME,
   }));
+  const [calendarWindowReady, setCalendarWindowReady] = useState(false);
+  const initialCalendarScrollConsumed = useRef(false);
+  const displayCalendarWindow = deriveCalendarDisplayWindow(calendarWindow);
   const [calendarWindowForm, setCalendarWindowForm] = useState<CalendarWindowFormState>(() => ({
     slotMinTime: toCalendarTimeInputValue(CALENDAR_SLOT_MIN_TIME),
     slotMaxTime: toCalendarTimeInputValue(CALENDAR_SLOT_MAX_TIME),
   }));
+  const calendarWindowFormRef = useRef(calendarWindowForm);
+  calendarWindowFormRef.current = calendarWindowForm;
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
   const [auditLogsTotal, setAuditLogsTotal] = useState(0);
   const [logsLoading, setLogsLoading] = useState(false);
+  // Calendar browse anchor only; appointment slot clicks edit the draft, not this date.
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [todayAgendaMode, setTodayAgendaMode] = useState<TodayAgendaMode>('time');
   const [employeeDropdownOpen, setEmployeeDropdownOpen] = useState(false);
@@ -673,6 +794,48 @@ function App() {
   const refreshDebounceRef = useRef<number | null>(null);
   const authRef = useRef<AuthResponse | null>(initialStoredAuthRef.current);
   const refreshInFlightRef = useRef<Promise<AuthResponse | null> | null>(null);
+  const sessionExpiredRef = useRef(false);
+  const shopContextVersionRef = useRef(0);
+  const usersLoadedRef = useRef(false);
+  const appointmentsLoadedRef = useRef(false);
+  const calendarWindowLoadedRef = useRef(false);
+  const auditLogsLoadedRef = useRef(false);
+  const shopSelectionRequestIdRef = useRef(0);
+  const shopNamesRequestIdRef = useRef(0);
+  const phoneLookupRequestIdRef = useRef(0);
+  const phoneInputRef = useRef<HTMLInputElement | null>(null);
+  const phoneBeforeInputHandlerRef = useRef<((input: HTMLInputElement, event: InputEvent) => void) | null>(null);
+  const phoneBeforeInputListenerRef = useRef<EventListener | null>(null);
+  const phonePasteDataRef = useRef<string | null>(null);
+  const phoneBeforeInputRef = useRef<{
+    digits: string;
+    selectionStart: number;
+    selectionEnd: number;
+    inputType: string;
+    data: string | null;
+  } | null>(null);
+  const pendingPhoneSelectionRef = useRef<{
+    digits: string;
+    selectionStart: number;
+    selectionEnd: number;
+  } | null>(null);
+  const availableShopsUserIdRef = useRef<string | null>(null);
+  const phoneNameEditedRef = useRef(false);
+  const phoneNoteEditedRef = useRef(false);
+  const formRef = useRef(form);
+  formRef.current = form;
+  const authContextVersion = shopContextVersionRef.current;
+
+  useLayoutEffect(() => {
+    const pending = pendingPhoneSelectionRef.current;
+    const input = phoneInputRef.current;
+    if (!pending || !input || pending.digits !== form.phone) {
+      return;
+    }
+
+    input.setSelectionRange(pending.selectionStart, pending.selectionEnd);
+    pendingPhoneSelectionRef.current = null;
+  }, [form.phone]);
 
   const calendarDayHeaderWeekdayFormatter = useMemo(
     () => new Intl.DateTimeFormat(locale, { weekday: 'short' }),
@@ -702,7 +865,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!auth || !isAdminRole(auth.user.role)) {
+    if (!auth || (!isAdminRole(auth.user.role) && !isManagerRole(auth.user.role))) {
       setAdminPanel('calendar');
     }
   }, [auth]);
@@ -772,8 +935,7 @@ function App() {
       }
 
       const configuredColor = employee.color?.trim();
-      const stableIdentifier = employee.id.trim() || employee.username.trim() || employee.displayName.trim() || 'employee-fallback';
-      colorMap.set(employee.id, configuredColor || colorFromStableIdentifier(stableIdentifier));
+      if (configuredColor) colorMap.set(employee.id, configuredColor);
     }
 
     return colorMap;
@@ -846,9 +1008,40 @@ function App() {
   const setNotice = (text: string, tone: MessageTone = 'info') => {
     setMessage(text);
     setMessageTone(tone);
+    if (tone !== 'error') {
+      sessionExpiredRef.current = false;
+    } else if (text === t('notices.sessionExpired')) {
+      sessionExpiredRef.current = true;
+      operationErrorsRef.current = [];
+      setOperationErrors([]);
+    }
   };
 
   const applyAuthState = useCallback((nextAuth: AuthResponse | null) => {
+    const previousAuth = authRef.current;
+    const userChanged = previousAuth?.user.id !== nextAuth?.user.id;
+    if (userChanged || previousAuth?.activeShopId !== nextAuth?.activeShopId) {
+      shopContextVersionRef.current += 1;
+      setReadErrors({});
+      originalEditingStartAtRef.current = null;
+      appointmentStartTimeEditedRef.current = false;
+      clearStartTimeError();
+      shopSelectionRequestIdRef.current += 1;
+      phoneLookupRequestIdRef.current += 1;
+      setPhoneLookupError(null);
+      usersLoadedRef.current = false;
+      appointmentsLoadedRef.current = false;
+      calendarWindowLoadedRef.current = false;
+      setCalendarWindowReady(false);
+      auditLogsLoadedRef.current = false;
+    }
+    if (userChanged) {
+      availableShopsUserIdRef.current = null;
+      setAvailableShops([]);
+    }
+    if (nextAuth) {
+      sessionExpiredRef.current = false;
+    }
     authRef.current = nextAuth;
     setAuth(nextAuth);
     persistAuth(nextAuth);
@@ -857,8 +1050,14 @@ function App() {
   const clearAuthState = useCallback(() => {
     applyAuthState(null);
     setUsers([]);
+    setAdminUsers([]);
     setAppointments([]);
     setForm(createInitialForm());
+    originalEditingStartAtRef.current = null;
+    appointmentStartTimeEditedRef.current = false;
+    clearStartTimeError();
+    phoneNameEditedRef.current = false;
+    phoneNoteEditedRef.current = false;
     setEditingId(null);
     setAuditLogs([]);
     setAuditLogsTotal(0);
@@ -871,6 +1070,7 @@ function App() {
   }, [clearAuthState]);
 
   const beginShopSelection = useCallback(async (authForRequest: AuthResponse) => {
+    const requestId = ++shopSelectionRequestIdRef.current;
     setShopSelection({ authForRequest, shops: [], loading: true, error: '' });
     try {
       const response = await fetch(`${API_BASE_URL}/shops`, {
@@ -880,23 +1080,44 @@ function App() {
       if (!response.ok || !Array.isArray(data)) {
         throw new Error(data?.message ?? t('shopSelect.failedToLoad'));
       }
+      if (requestId !== shopSelectionRequestIdRef.current) {
+        return;
+      }
       setAvailableShops(data);
+      availableShopsUserIdRef.current = authForRequest.user.id;
+      setReadErrors((current) => {
+        if (!('shopNames' in current)) {
+          return current;
+        }
+        const next = { ...current };
+        delete next.shopNames;
+        return next;
+      });
       setShopSelection({ authForRequest, shops: data, loading: false, error: '' });
-      setSelectedShopId((current) => current || data[0]?.id || '');
+      setSelectedShopId((current) => (
+        data.some((shop: ShopSummary) => shop.id === current) ? current : data[0]?.id || ''
+      ));
     } catch (error) {
+      if (requestId !== shopSelectionRequestIdRef.current) {
+        return;
+      }
+      const errorMessage = error instanceof Error ? error.message : t('shopSelect.failedToLoad');
       setShopSelection({
         authForRequest,
         shops: [],
         loading: false,
-        error: error instanceof Error ? error.message : t('shopSelect.failedToLoad'),
+        error: errorMessage,
       });
+      showOperationError(errorMessage);
     }
-  }, [t]);
+  }, [showOperationError, t]);
 
   const confirmShopSelection = useCallback(async (shopId: string) => {
-    if (!shopSelection) {
+    const selection = shopSelection;
+    if (!selection || selection.loading || !shopId) {
       return;
     }
+    const requestId = shopSelectionRequestIdRef.current;
     setLoading(true);
     try {
       const response = await fetch(`${API_BASE_URL}/auth/select-shop`, {
@@ -911,35 +1132,60 @@ function App() {
       if (!response.ok || !isAuthResponse(data)) {
         throw new Error(data?.message ?? t('shopSelect.failedToSelect'));
       }
+      if (requestId !== shopSelectionRequestIdRef.current) {
+        return;
+      }
       applyAuthState(data);
       setShopSelection(null);
       setNotice(t('notices.signedInAs', { displayName: data.user.displayName }), 'success');
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : t('shopSelect.failedToSelect'), 'error');
+      if (requestId !== shopSelectionRequestIdRef.current) {
+        return;
+      }
+      const message = error instanceof Error ? error.message : t('shopSelect.failedToSelect');
+      showOperationError(message);
     } finally {
       setLoading(false);
     }
-  }, [applyAuthState, shopSelection, t]);
+  }, [applyAuthState, shopSelection, showOperationError, t]);
 
   const cancelShopSelection = useCallback(() => {
+    shopSelectionRequestIdRef.current += 1;
     setShopSelection(null);
+    setSelectedShopId('');
   }, []);
 
-  const parseStartTimeInput = useCallback((value: string) => {
+  const resolveStartTimeInput = useCallback((value: string) => {
+    if (!calendarWindowReady) {
+      return { status: 'window-unavailable' } as const;
+    }
+
     const startMinutes = parseClockToMinutes(calendarWindow.slotMinTime);
     const endMinutes = parseClockToMinutes(calendarWindow.slotMaxTime);
 
     if (startMinutes === null || endMinutes === null) {
-      return parseFlexibleTimeInput(value);
+      return { status: 'window-unavailable' } as const;
     }
 
-    return parseFlexibleTimeInput(value, {
-      inferenceWindow: {
-        startMinutes,
-        endMinutes,
-      },
-    });
-  }, [calendarWindow.slotMinTime, calendarWindow.slotMaxTime]);
+    return resolveAppointmentTimeInput(value, { startMinutes, endMinutes });
+  }, [calendarWindow.slotMinTime, calendarWindow.slotMaxTime, calendarWindowReady]);
+
+  const parseStartTimeInput = useCallback((value: string): ParsedFlexibleTimeInput | null => {
+    const resolution = resolveStartTimeInput(value);
+    return resolution.status === 'valid' ? resolution.parsed : null;
+  }, [resolveStartTimeInput]);
+
+  const allowCalendarStart = useCallback((start: Date) => {
+    if (!calendarWindowReady) {
+      showOperationError(t('notices.calendarWindowUnavailable'));
+      return false;
+    }
+    if (!isCalendarStartWithinBusinessHours(start, calendarWindow)) {
+      showOperationError(t('notices.outsideBusinessHours'));
+      return false;
+    }
+    return true;
+  }, [calendarWindow, calendarWindowReady, showOperationError, t]);
 
   const refreshAuthSession = useCallback(async (refreshToken: string, showExpiredNotice = true) => {
     if (refreshInFlightRef.current) {
@@ -1011,7 +1257,7 @@ function App() {
   }, [refreshAuthSession]);
 
   const getDisplayError = (error: unknown, fallback: string) => {
-    if (error instanceof Error && /conflict|already|overlap/i.test(error.message)) {
+    if (error instanceof Error && /appointment.*(?:conflict|overlap)|(?:conflict|overlap).*appointment/i.test(error.message)) {
       return t('errors.conflict');
     }
     return error instanceof Error ? error.message : fallback;
@@ -1058,32 +1304,180 @@ function App() {
     return parsed;
   };
 
+  const isSameShopContext = (expectedAuth: AuthResponse | null) => {
+    const currentAuth = authRef.current;
+    return Boolean(
+      authContextVersion === shopContextVersionRef.current
+      &&
+      expectedAuth
+      && currentAuth
+      && expectedAuth.user.id === currentAuth.user.id
+      && expectedAuth.activeShopId === currentAuth.activeShopId,
+    );
+  };
+
+  const setReadError = useCallback((key: ReadErrorKey, text: string) => {
+    setReadErrors((current) => ({ ...current, [key]: text }));
+  }, []);
+
+  const clearReadError = useCallback((key: ReadErrorKey) => {
+    setReadErrors((current) => {
+      if (!(key in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const reportReadFailure = useCallback((
+    key: ReadErrorKey,
+    error: unknown,
+    fallbackKey: MessageKey,
+    hasPreviouslyLoaded: boolean,
+  ) => {
+    const detail = getDisplayError(error, t(fallbackKey));
+    if (detail === t('notices.sessionExpired')) {
+      setNotice(detail, 'error');
+      return;
+    }
+
+    const resourceKey = key === 'appointments'
+      ? 'notices.resource.calendar'
+      : key === 'users'
+        ? 'notices.resource.employees'
+        : key === 'calendarWindow'
+          ? 'notices.resource.calendarSettings'
+          : key === 'auditLogs'
+            ? 'notices.resource.logs'
+            : 'notices.resource.shopNames';
+    const messageKey = hasPreviouslyLoaded
+      ? 'notices.refreshFailedShowingStale'
+      : 'notices.initialLoadFailed';
+    setReadError(key, t(messageKey, {
+      resource: t(resourceKey),
+      error: detail,
+    }));
+  }, [setReadError, t]);
+
+  const reportMutationRefreshFailure = useCallback((
+    key: 'users' | 'appointments',
+    error: unknown,
+  ) => {
+    const detail = getDisplayError(error, t('notices.failedLoadCalendar'));
+    if (detail === t('notices.sessionExpired')) {
+      setNotice(detail, 'error');
+      return;
+    }
+    setReadError(key, t('notices.mutationSucceededRefreshFailed', { error: detail }));
+  }, [setReadError, t]);
+
   const loadUsers = useCallback(async () => {
-    const data = await fetchJson('/users');
+    const requestAuth = auth;
+    if (!requestAuth || !isSameShopContext(requestAuth)) {
+      return;
+    }
+    const data = await fetchJson('/users/staff');
+    if (!isSameShopContext(requestAuth)) {
+      return;
+    }
+    assertPersistedStaffColors(data, pendingAssignmentRuntime);
     setUsers(data);
-  }, [auth?.accessToken]);
+    if (isAdminRole(requestAuth.user.role)) {
+      const managedData = await fetchJson('/users');
+      if (!isSameShopContext(requestAuth)) {
+        return;
+      }
+      setAdminUsers(managedData);
+    } else {
+      setAdminUsers([]);
+    }
+    usersLoadedRef.current = true;
+    clearReadError('users');
+  }, [auth, clearReadError, pendingAssignmentRuntime]);
 
   const loadAppointments = useCallback(async () => {
+    const requestAuth = auth;
+    if (!requestAuth || !isSameShopContext(requestAuth)) {
+      return;
+    }
     const data = await fetchJson('/appointments');
+    if (!isSameShopContext(requestAuth)) {
+      return;
+    }
     setAppointments(data);
-  }, [auth?.accessToken]);
+    appointmentsLoadedRef.current = true;
+    clearReadError('appointments');
+  }, [auth, clearReadError]);
 
   const loadCalendarWindow = useCallback(async () => {
+    const requestAuth = auth;
+    if (!requestAuth || !isSameShopContext(requestAuth)) {
+      return;
+    }
+    const formAtRequestStart = calendarWindowFormRef.current;
     const data = await fetchJson('/system-settings/calendar-window');
+    if (!isSameShopContext(requestAuth)) {
+      return;
+    }
+    if (!data || !isValidCalendarWindowRange(data.slotMinTime, data.slotMaxTime)) {
+      throw new Error(t('notices.calendarWindowUnavailable'));
+    }
     const normalized = normalizeCalendarWindowSettings(data);
 
     setCalendarWindow(normalized);
-    setCalendarWindowForm({
-      slotMinTime: toCalendarTimeInputValue(normalized.slotMinTime),
-      slotMaxTime: toCalendarTimeInputValue(normalized.slotMaxTime),
-    });
-  }, [auth?.accessToken]);
+    setCalendarWindowForm((current) => ({
+      slotMinTime: current.slotMinTime === formAtRequestStart.slotMinTime
+        ? toCalendarTimeInputValue(normalized.slotMinTime)
+        : current.slotMinTime,
+      slotMaxTime: current.slotMaxTime === formAtRequestStart.slotMaxTime
+        ? toCalendarTimeInputValue(normalized.slotMaxTime)
+        : current.slotMaxTime,
+    }));
+    calendarWindowLoadedRef.current = true;
+    setCalendarWindowReady(true);
+    clearReadError('calendarWindow');
+  }, [auth, clearReadError, t]);
 
   const loadAuditLogs = useCallback(async () => {
+    const requestAuth = auth;
+    if (!requestAuth || !isSameShopContext(requestAuth)) {
+      return;
+    }
     const data = await fetchJson('/audit/logs?page=1&limit=100') as AuditLogsResponse;
+    if (!isSameShopContext(requestAuth)) {
+      return;
+    }
     setAuditLogs(data.items ?? []);
     setAuditLogsTotal(data.total ?? 0);
-  }, [auth?.accessToken]);
+    auditLogsLoadedRef.current = true;
+    clearReadError('auditLogs');
+  }, [auth, clearReadError]);
+
+  const loadShopNames = useCallback(async () => {
+    const requestAuth = auth;
+    if (!requestAuth || !canSwitchShopRole(requestAuth.user.role)) {
+      return;
+    }
+    const requestId = ++shopNamesRequestIdRef.current;
+    try {
+      const data = await fetchJson('/shops');
+      if (requestId !== shopNamesRequestIdRef.current || !isSameShopContext(requestAuth)) {
+        return;
+      }
+      if (Array.isArray(data)) {
+        setAvailableShops(data);
+        availableShopsUserIdRef.current = requestAuth.user.id;
+        clearReadError('shopNames');
+      }
+    } catch (error) {
+      if (requestId !== shopNamesRequestIdRef.current || !isSameShopContext(requestAuth)) {
+        return;
+      }
+      throw error;
+    }
+  }, [auth, clearReadError]);
 
   const scheduleAppointmentsRefresh = useCallback(() => {
     if (refreshDebounceRef.current) {
@@ -1091,24 +1485,27 @@ function App() {
     }
 
     refreshDebounceRef.current = window.setTimeout(() => {
-      void loadAppointments();
+      void loadAppointments().catch(error => {
+        if (isSameShopContext(auth)) {
+          reportReadFailure('appointments', error, 'notices.failedLoadCalendar', appointmentsLoadedRef.current);
+        }
+      });
     }, 200);
-  }, [loadAppointments]);
+  }, [auth, loadAppointments, reportReadFailure]);
 
   useEffect(() => {
     if (!auth || !canSwitchShopRole(auth.user.role)) {
       return;
     }
-    fetchJson('/shops')
-      .then((data) => {
-        if (Array.isArray(data)) {
-          setAvailableShops(data);
-        }
-      })
-      .catch(() => {
-        // Non-critical: only used to render a friendly shop name in the topbar.
-      });
-  }, [auth?.accessToken, auth?.user.role]);
+    void loadShopNames().catch((error) => {
+      if (isSameShopContext(auth)) {
+        reportReadFailure('shopNames', error, 'notices.failedLoadShopNames', availableShopsUserIdRef.current === auth.user.id);
+      }
+    });
+    return () => {
+      shopNamesRequestIdRef.current += 1;
+    };
+  }, [auth, loadShopNames, reportReadFailure]);
 
   useEffect(() => {
     if (!auth) {
@@ -1122,14 +1519,22 @@ function App() {
       });
       return;
     }
-    void (async () => {
-      const results = await Promise.allSettled([loadUsers(), loadAppointments(), loadCalendarWindow()]);
-      const rejected = results.find((result) => result.status === 'rejected') as PromiseRejectedResult | undefined;
-      if (rejected) {
-        setNotice(getDisplayError(rejected.reason, t('notices.failedLoadCalendar')), 'error');
+    void loadUsers().catch((error) => {
+      if (isSameShopContext(auth)) {
+        reportReadFailure('users', error, 'notices.failedLoadCalendar', usersLoadedRef.current);
       }
-    })();
-  }, [auth, loadAppointments, loadCalendarWindow, loadUsers]);
+    });
+    void loadAppointments().catch((error) => {
+      if (isSameShopContext(auth)) {
+        reportReadFailure('appointments', error, 'notices.failedLoadCalendar', appointmentsLoadedRef.current);
+      }
+    });
+    void loadCalendarWindow().catch((error) => {
+      if (isSameShopContext(auth)) {
+        reportReadFailure('calendarWindow', error, 'notices.failedLoadCalendar', calendarWindowLoadedRef.current);
+      }
+    });
+  }, [auth, loadAppointments, loadCalendarWindow, loadUsers, reportReadFailure]);
 
   useEffect(() => {
     if (!auth?.accessToken) {
@@ -1164,23 +1569,66 @@ function App() {
   }, [auth?.accessToken, scheduleAppointmentsRefresh]);
 
   useEffect(() => {
-    if (!auth || !isAdminRole(auth.user.role) || adminPanel !== 'logs') {
+    if (!auth || (!isAdminRole(auth.user.role) && !isManagerRole(auth.user.role)) || adminPanel !== 'logs') {
       return;
     }
 
     setLogsLoading(true);
     void loadAuditLogs()
       .catch((error) => {
-        setNotice(getDisplayError(error, t('notices.failedLoadLogs')), 'error');
+        if (isSameShopContext(auth)) {
+          reportReadFailure('auditLogs', error, 'notices.failedLoadLogs', auditLogsLoadedRef.current);
+        }
       })
       .finally(() => {
         setLogsLoading(false);
       });
-  }, [auth, adminPanel, loadAuditLogs]);
+  }, [auth, adminPanel, loadAuditLogs, reportReadFailure]);
+
+  const retryRead = useCallback(async (key: ReadErrorKey) => {
+    const requestAuth = auth;
+    if (!requestAuth) {
+      return;
+    }
+
+    try {
+      if (key === 'users') {
+        await loadUsers();
+      } else if (key === 'appointments') {
+        await loadAppointments();
+      } else if (key === 'calendarWindow') {
+        await loadCalendarWindow();
+      } else if (key === 'auditLogs') {
+        await loadAuditLogs();
+      } else {
+        await loadShopNames();
+      }
+    } catch (error) {
+      if (!isSameShopContext(requestAuth)) {
+        return;
+      }
+      const fallbackKey = key === 'auditLogs'
+        ? 'notices.failedLoadLogs'
+        : key === 'shopNames'
+          ? 'notices.failedLoadShopNames'
+          : 'notices.failedLoadCalendar';
+      const hasLoaded = key === 'users'
+        ? usersLoadedRef.current
+        : key === 'appointments'
+          ? appointmentsLoadedRef.current
+          : key === 'calendarWindow'
+            ? calendarWindowLoadedRef.current
+            : key === 'auditLogs'
+              ? auditLogsLoadedRef.current
+              : availableShopsUserIdRef.current === requestAuth.user.id;
+      reportReadFailure(key, error, fallbackKey, hasLoaded);
+    }
+  }, [auth, loadAppointments, loadAuditLogs, loadCalendarWindow, loadShopNames, loadUsers, reportReadFailure]);
 
   const handleLogin = async (event: React.FormEvent) => {
     event.preventDefault();
     setLoading(true);
+    sessionExpiredRef.current = false;
     setMessage('');
     try {
       const response = await fetch(`${API_BASE_URL}/auth/login`, {
@@ -1235,51 +1683,88 @@ function App() {
     );
 
     if (!form.startDate || !form.startTime || !form.phone) {
-      setNotice(t('notices.fillRequired'), 'error');
+      showOperationError(t('notices.fillRequired'));
       return;
     }
 
     if (!form.durationMinutes.trim()) {
-      setNotice(t('notices.durationRequired'), 'error');
+      showOperationError(t('notices.durationRequired'));
       return;
     }
 
     const durationMinutes = parseDurationMinutes(form.durationMinutes);
     if (durationMinutes === null) {
-      setNotice(t('notices.durationInvalid'), 'error');
+      showOperationError(t('notices.durationInvalid'));
       return;
     }
 
     if (!/^\d{10}$/.test(form.phone)) {
-      setNotice(t('notices.phoneInvalid'), 'error');
+      showOperationError(t('notices.phoneInvalid'));
       return;
     }
 
     const priceUnchanged = Boolean(editingId) && form.price === originalEditingPrice;
     if (!priceUnchanged && form.price.trim() && !/^\d+$/.test(form.price)) {
-      setNotice(t('notices.priceInvalid'), 'error');
+      showOperationError(t('notices.priceInvalid'));
       return;
     }
 
-    const startAt = buildLocalDateTime(form.startDate, form.startTime, parseStartTimeInput);
     if (form.startDate && !parseUsDateInput(form.startDate)) {
-      setNotice(t('notices.startDateInvalid'), 'error');
+      showOperationError(t('notices.startDateInvalid'));
       return;
     }
 
+    const originalStartAt = editingId && !appointmentStartTimeEditedRef.current
+      ? originalEditingStartAtRef.current
+      : null;
+    if (rejectedStartTimeInputRef.current) {
+      showOperationError(t('notices.startTimeInvalid'));
+      return;
+    }
+    const preservedStartAt = originalStartAt
+      ? preserveAppointmentTimeForDate(form.startDate, originalStartAt)
+      : null;
+    let startAt = preservedStartAt;
     if (!startAt) {
-      setNotice(t('notices.startDateTimeInvalid'), 'error');
+      const timeResolution = resolveStartTimeInput(form.startTime);
+      if (timeResolution.status !== 'valid') {
+        const errorKey = startTimeErrorKey(timeResolution.status);
+        setStartTimeError(errorKey);
+        showOperationError(t(errorKey, {
+          start: calendarWindow.slotMinTime.slice(0, 5),
+          end: calendarWindow.slotMaxTime.slice(0, 5),
+        }));
+        return;
+      }
+
+      startAt = buildLocalDateTime(
+        form.startDate,
+        form.startTime,
+        () => timeResolution.parsed,
+      );
+      if (startAt) {
+        setForm((current) => current.startTime === form.startTime
+          ? { ...current, startTime: timeResolution.parsed.normalized }
+          : current);
+      }
+    }
+    if (!startAt) {
+      showOperationError(t('notices.startDateTimeInvalid'));
       return;
     }
 
-    if (isLocalDateTimeInPast(startAt) && !isAdminRole(auth.user.role)) {
-      setNotice(t('notices.startInPast'), 'error');
+    if (
+      !editingId &&
+      isLocalDateTimeInPast(startAt) &&
+      !canManageAppointmentsRole(auth.user.role)
+    ) {
+      showOperationError(t('notices.startInPast'));
       return;
     }
 
     const endAt = computeEndFromDuration(startAt, durationMinutes);
     if (crossesIntoNextDay(startAt, endAt)) {
-      setNotice(t('notices.endNextDay'), 'error');
+      showOperationError(t('notices.endNextDay'));
       return;
     }
 
@@ -1292,7 +1777,7 @@ function App() {
     }
 
     if (startAt >= endAt) {
-      setNotice(t('notices.rangeInvalid'), 'error');
+      showOperationError(t('notices.rangeInvalid'));
       return;
     }
 
@@ -1312,67 +1797,102 @@ function App() {
         updatedById: auth.user.id,
       };
 
-      if (editingId) {
-        await fetchJson(`/appointments/${editingId}`, {
-          method: 'PATCH',
-          body: JSON.stringify(payload),
-        });
-        setNotice(t('notices.appointmentUpdated'), 'success');
-      } else {
-        await fetchJson('/appointments', {
-          method: 'POST',
-          body: JSON.stringify(payload),
-        });
-        setNotice(t('notices.appointmentCreated'), 'success');
+      const successMessage = editingId
+        ? t('notices.appointmentUpdated')
+        : t('notices.appointmentCreated');
+      try {
+        if (editingId) {
+          await fetchJson(`/appointments/${editingId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(payload),
+          });
+        } else {
+          await fetchJson('/appointments', {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          });
+        }
+      } catch (error) {
+        if (isSameShopContext(auth)) {
+          showOperationError(getDisplayError(error, t('notices.saveFailed')));
+        }
+        return;
+      }
+
+      if (!isSameShopContext(auth)) {
+        return;
       }
       setForm(createInitialForm());
+      phoneNameEditedRef.current = false;
+      phoneNoteEditedRef.current = false;
       setEditingId(null);
-      await loadAppointments();
-    } catch (error) {
-      setNotice(getDisplayError(error, t('notices.saveFailed')), 'error');
+      originalEditingStartAtRef.current = null;
+      appointmentStartTimeEditedRef.current = false;
+      clearStartTimeError();
+      setNotice(successMessage, 'success');
+      try {
+        await loadAppointments();
+      } catch (error) {
+        if (isSameShopContext(auth)) {
+          reportMutationRefreshFailure('appointments', error);
+        }
+      }
     } finally {
       setLoading(false);
     }
   };
 
   const handleEdit = async (appointment: AppointmentRecord) => {
-    setEditingId(appointment.id);
-    const editingPrice = appointment.price.replace(/\.00$/, '');
-    setOriginalEditingPrice(editingPrice);
-    setNotice(t('notices.editingExisting'), 'info');
-    const startAt = new Date(appointment.startAt);
-    const endAt = new Date(appointment.endAt);
+    const requestAuth = authRef.current;
+    try {
+      const groupMembers = appointment.groupId
+        ? ((await fetchJson(`/appointments?groupId=${appointment.groupId}`)) as AppointmentRecord[])
+        : [appointment];
+      if (!isSameShopContext(requestAuth)) {
+        return;
+      }
+      phoneNameEditedRef.current = true;
+      phoneNoteEditedRef.current = true;
+      originalEditingStartAtRef.current = new Date(appointment.startAt);
+      appointmentStartTimeEditedRef.current = false;
+      clearStartTimeError();
+      setEditingId(appointment.id);
+      const editingPrice = appointment.price.replace(/\.00$/, '');
+      setOriginalEditingPrice(editingPrice);
+      setNotice(t('notices.editingExisting'), 'info');
+      const startAt = new Date(appointment.startAt);
+      const endAt = new Date(appointment.endAt);
 
-    // Linked-edit groups: pull sibling records so headcount/employee selection reflects the whole group.
-    const groupMembers = appointment.groupId
-      ? ((await fetchJson(`/appointments?groupId=${appointment.groupId}`)) as AppointmentRecord[])
-      : [appointment];
+      const realMembers = groupMembers.filter(
+        (member) => !pendingEmployee || member.employeeId !== pendingEmployee.id,
+      );
 
-    const realMembers = groupMembers.filter(
-      (member) => !pendingEmployee || member.employeeId !== pendingEmployee.id,
-    );
-
-    setForm({
-      employeeIds: realMembers.map((member) => member.employeeId),
-      partySize: String(groupMembers.length || 1),
-      startDate: formatDateForUsInput(startAt),
-      startTime: formatTimeOnlyForInput(startAt),
-      durationMinutes: String(
-        computeDurationBetweenMinutes(startAt, endAt) ?? DEFAULT_APPOINTMENT_DURATION_MINUTES,
-      ),
-      phone: appointment.phone,
-      price: editingPrice,
-      customerName: appointment.customerName ?? '',
-      note: appointment.note ?? '',
-    });
+      setForm({
+        employeeIds: realMembers.map((member) => member.employeeId),
+        partySize: String(groupMembers.length || 1),
+        startDate: formatDateForUsInput(startAt),
+        startTime: formatAppointmentTimeInput(startAt),
+        durationMinutes: String(
+          computeDurationBetweenMinutes(startAt, endAt) ?? DEFAULT_APPOINTMENT_DURATION_MINUTES,
+        ),
+        phone: appointment.phone,
+        price: editingPrice,
+        customerName: appointment.customerName ?? '',
+        note: appointment.note ?? '',
+      });
+    } catch (error) {
+      if (isSameShopContext(requestAuth)) {
+        showOperationError(getDisplayError(error, t('notices.failedLoadAppointment')));
+      }
+    }
   };
 
   const handleDelete = async (appointmentId: string) => {
-    if (!auth) {
+    if (!auth || !canManageAppointmentsRole(auth.user.role)) {
       return;
     }
 
-    const confirmed = window.confirm(isAdminRole(auth.user.role) ? t('confirm.deleteAppointmentAdmin') : t('confirm.deleteAppointmentEmployee'));
+    const confirmed = window.confirm(t('confirm.deleteAppointmentAdmin'));
     if (!confirmed) {
       setNotice(t('notices.actionCancelled'), 'info');
       return;
@@ -1383,14 +1903,65 @@ function App() {
       await fetchJson(`/appointments/${appointmentId}`, {
         method: 'DELETE',
       });
+      if (!isSameShopContext(auth)) {
+        return;
+      }
       if (editingId === appointmentId) {
         setEditingId(null);
         setForm(createInitialForm());
+        originalEditingStartAtRef.current = null;
+        appointmentStartTimeEditedRef.current = false;
+        clearStartTimeError();
+        phoneNameEditedRef.current = false;
+        phoneNoteEditedRef.current = false;
       }
-      setNotice(isAdminRole(auth.user.role) ? t('notices.appointmentDeleted') : t('notices.appointmentCancelled'), 'success');
-      await loadAppointments();
+      setNotice(t('notices.appointmentDeleted'), 'success');
+      try {
+        await loadAppointments();
+      } catch (error) {
+        if (isSameShopContext(auth)) {
+          reportMutationRefreshFailure('appointments', error);
+        }
+      }
     } catch (error) {
-      setNotice(getDisplayError(error, t('notices.deleteFailed')), 'error');
+      if (isSameShopContext(auth)) {
+        showOperationError(getDisplayError(error, t('notices.deleteFailed')));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCancelAppointment = async (appointmentId: string) => {
+    if (!auth) return;
+    if (!window.confirm(t('confirm.deleteAppointmentEmployee'))) {
+      setNotice(t('notices.actionCancelled'), 'info');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await fetchJson(`/appointments/${appointmentId}/cancel`, { method: 'POST' });
+      if (!isSameShopContext(auth)) return;
+      if (editingId === appointmentId) {
+        setEditingId(null);
+        setForm(createInitialForm());
+        originalEditingStartAtRef.current = null;
+        appointmentStartTimeEditedRef.current = false;
+        clearStartTimeError();
+        phoneNameEditedRef.current = false;
+        phoneNoteEditedRef.current = false;
+      }
+      setNotice(t('notices.appointmentCancelled'), 'success');
+      try {
+        await loadAppointments();
+      } catch (error) {
+        if (isSameShopContext(auth)) reportMutationRefreshFailure('appointments', error);
+      }
+    } catch (error) {
+      if (isSameShopContext(auth)) {
+        showOperationError(getDisplayError(error, t('notices.deleteFailed')));
+      }
     } finally {
       setLoading(false);
     }
@@ -1408,7 +1979,7 @@ function App() {
     const role = adminCreateUserForm.role;
 
     if (password !== confirmPassword) {
-      setNotice(t('notices.passwordMismatch'), 'error');
+      showOperationError(t('notices.passwordMismatch'));
       return;
     }
 
@@ -1418,11 +1989,23 @@ function App() {
         method: 'POST',
         body: JSON.stringify({ username, password, displayName, role }),
       });
-      setNotice(t('notices.employeeCreated'), 'success');
-      await loadUsers();
+      if (!isSameShopContext(auth)) {
+        return;
+      }
       setAdminCreateUserForm(createInitialAdminCreateUserForm());
+      const successMessage = t('notices.employeeCreated');
+      setNotice(successMessage, 'success');
+      try {
+        await loadUsers();
+      } catch (error) {
+        if (isSameShopContext(auth)) {
+          reportMutationRefreshFailure('users', error);
+        }
+      }
     } catch (error) {
-      setNotice(getDisplayError(error, t('notices.userCreationFailed')), 'error');
+      if (isSameShopContext(auth)) {
+        showOperationError(getDisplayError(error, t('notices.userCreationFailed')));
+      }
     } finally {
       setLoading(false);
     }
@@ -1441,12 +2024,12 @@ function App() {
     const confirmPassword = String(formData.get('confirmPassword') ?? '');
 
     if (!targetUserId) {
-      setNotice(t('notices.passwordTargetRequired'), 'error');
+      showOperationError(t('notices.passwordTargetRequired'));
       return;
     }
 
     if (newPassword !== confirmPassword) {
-      setNotice(t('notices.passwordMismatch'), 'error');
+      showOperationError(t('notices.passwordMismatch'));
       return;
     }
 
@@ -1457,7 +2040,7 @@ function App() {
         body: JSON.stringify({ newPassword }),
       });
 
-      const targetUser = users.find((user) => user.id === targetUserId);
+      const targetUser = adminUsers.find((user) => user.id === targetUserId);
       if (targetUserId === auth.user.id) {
         forceLogoutWithNotice(t('notices.passwordUpdatedSelfSignedOut'));
         return;
@@ -1470,7 +2053,7 @@ function App() {
       formElement.reset();
       setPasswordResetTargetUserId('');
     } catch (error) {
-      setNotice(getDisplayError(error, t('notices.passwordUpdateFailed')), 'error');
+      showOperationError(getDisplayError(error, t('notices.passwordUpdateFailed')));
     } finally {
       setLoading(false);
     }
@@ -1499,7 +2082,7 @@ function App() {
       });
       setNotice(t('notices.windowSaved'), 'success');
     } catch (error) {
-      setNotice(getDisplayError(error, t('notices.windowSaveFailed')), 'error');
+      showOperationError(getDisplayError(error, t('notices.windowSaveFailed')));
     } finally {
       setLoading(false);
     }
@@ -1515,10 +2098,24 @@ function App() {
         method: 'PATCH',
         body: JSON.stringify({ status: nextStatus }),
       });
-      setNotice(nextStatus === 'ACTIVE' ? t('notices.userEnabled') : t('notices.userDisabled'), 'success');
-      await loadUsers();
+      if (!isSameShopContext(auth)) {
+        return;
+      }
+      const successMessage = nextStatus === 'ACTIVE'
+        ? t('notices.userEnabled')
+        : t('notices.userDisabled');
+      setNotice(successMessage, 'success');
+      try {
+        await loadUsers();
+      } catch (error) {
+        if (isSameShopContext(auth)) {
+          reportMutationRefreshFailure('users', error);
+        }
+      }
     } catch (error) {
-      setNotice(getDisplayError(error, t('notices.statusUpdateFailed')), 'error');
+      if (isSameShopContext(auth)) {
+        showOperationError(getDisplayError(error, t('notices.statusUpdateFailed')));
+      }
     } finally {
       setLoading(false);
     }
@@ -1539,10 +2136,22 @@ function App() {
       await fetchJson(`/users/${user.id}`, {
         method: 'DELETE',
       });
-      setNotice(t('notices.userRemoved'), 'success');
-      await loadUsers();
+      if (!isSameShopContext(auth)) {
+        return;
+      }
+      const successMessage = t('notices.userRemoved');
+      setNotice(successMessage, 'success');
+      try {
+        await loadUsers();
+      } catch (error) {
+        if (isSameShopContext(auth)) {
+          reportMutationRefreshFailure('users', error);
+        }
+      }
     } catch (error) {
-      setNotice(getDisplayError(error, t('notices.userRemovalFailed')), 'error');
+      if (isSameShopContext(auth)) {
+        showOperationError(getDisplayError(error, t('notices.userRemovalFailed')));
+      }
     } finally {
       setLoading(false);
     }
@@ -1552,8 +2161,9 @@ function App() {
     if (!auth) {
       return;
     }
+    let appointmentId = '';
     try {
-      const appointmentId = info.event.extendedProps?.appointmentId ?? info.event.id;
+      appointmentId = info.event.extendedProps?.appointmentId ?? info.event.id;
       await fetchJson(`/appointments/${appointmentId}`, {
         method: 'PATCH',
         body: JSON.stringify({
@@ -1562,10 +2172,23 @@ function App() {
           updatedById: auth.user.id,
         }),
       });
+    } catch (error) {
+      info.revert();
+      if (isSameShopContext(auth)) {
+        showOperationError(getDisplayError(error, t('notices.moveFailed')));
+      }
+      return;
+    }
+
+    if (!isSameShopContext(auth)) {
+      return;
+    }
+    try {
       await loadAppointments();
     } catch (error) {
-      setNotice(getDisplayError(error, t('notices.moveFailed')), 'error');
-      await loadAppointments();
+      if (isSameShopContext(auth)) {
+        reportMutationRefreshFailure('appointments', error);
+      }
     }
   };
 
@@ -1573,8 +2196,9 @@ function App() {
     if (!auth) {
       return;
     }
+    let appointmentId = '';
     try {
-      const appointmentId = info.event.extendedProps?.appointmentId ?? info.event.id;
+      appointmentId = info.event.extendedProps?.appointmentId ?? info.event.id;
       await fetchJson(`/appointments/${appointmentId}`, {
         method: 'PATCH',
         body: JSON.stringify({
@@ -1583,35 +2207,40 @@ function App() {
           updatedById: auth.user.id,
         }),
       });
+    } catch (error) {
+      info.revert();
+      if (isSameShopContext(auth)) {
+        showOperationError(getDisplayError(error, t('notices.resizeFailed')));
+      }
+      return;
+    }
+
+    if (!isSameShopContext(auth)) {
+      return;
+    }
+    try {
       await loadAppointments();
     } catch (error) {
-      setNotice(getDisplayError(error, t('notices.resizeFailed')), 'error');
-      await loadAppointments();
+      if (isSameShopContext(auth)) {
+        reportMutationRefreshFailure('appointments', error);
+      }
     }
   };
 
   const handleDateClick = (info: DateClickArg) => {
-    setSelectedDate(info.date);
+    if (!allowCalendarStart(info.date)) {
+      return;
+    }
     setEditingId(null);
+    originalEditingStartAtRef.current = null;
+    appointmentStartTimeEditedRef.current = false;
+    clearStartTimeError();
     setNotice(t('notices.newDraft'), 'info');
     setForm((current) => applySlotClickToForm(current, info.date));
   };
 
-  const applyStartDateShortcut = useCallback((shortcut: 'minus1' | 'today' | 'plus1' | 'plus3' | 'plus7') => {
-    setForm((current) => {
-      if (shortcut === 'today') {
-        return { ...current, startDate: formatRelativeToToday(0) };
-      }
-
-      const incrementDays = shortcut === 'minus1'
-        ? -1
-        : shortcut === 'plus7'
-          ? 7
-          : shortcut === 'plus3'
-            ? 3
-            : 1;
-      return { ...current, startDate: incrementUsDateInputByDays(current.startDate, incrementDays) };
-    });
+  const applyToday = useCallback(() => {
+    setForm((current) => ({ ...current, startDate: formatDateForUsInput(new Date()) }));
   }, []);
 
   const applyDurationShortcut = useCallback((minutes: number) => {
@@ -1634,10 +2263,15 @@ function App() {
 
   const durationPreview = useMemo(() => {
     const durationMinutes = parseDurationMinutes(form.durationMinutes);
-    const startAt = buildLocalDateTime(form.startDate, form.startTime, parseStartTimeInput);
+    const originalStartAt = editingId && !appointmentStartTimeEditedRef.current
+      ? originalEditingStartAtRef.current
+      : null;
+    const startAt = originalStartAt
+      ? preserveAppointmentTimeForDate(form.startDate, originalStartAt)
+      : buildLocalDateTime(form.startDate, form.startTime, parseStartTimeInput);
 
     if (!startAt || durationMinutes === null) {
-      return { text: t('editor.previewPlaceholder'), crossesDay: false };
+      return { text: null, crossesDay: false };
     }
 
     const endAt = computeEndFromDuration(startAt, durationMinutes);
@@ -1647,19 +2281,7 @@ function App() {
       text: t('editor.previewDerived', { value: formatDateTimeForPreview(endAt, locale) }),
       crossesDay,
     };
-  }, [form.durationMinutes, form.startDate, form.startTime, locale, parseStartTimeInput, t]);
-
-  const canApplyMinusOneStartDate = useMemo(() => {
-    const startDate = parseUsDateInput(form.startDate);
-    if (!startDate) {
-      return false;
-    }
-
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    return startDate.getTime() > today.getTime();
-  }, [form.startDate]);
+  }, [editingId, form.durationMinutes, form.startDate, form.startTime, locale, parseStartTimeInput, t]);
 
   const appointmentByIdMap = useMemo(() => {
     const idMap = new Map<string, AppointmentRecord>();
@@ -1693,6 +2315,11 @@ function App() {
     if (!stillExists) {
       setEditingId(null);
       setForm(createInitialForm());
+      originalEditingStartAtRef.current = null;
+      appointmentStartTimeEditedRef.current = false;
+      clearStartTimeError();
+      phoneNameEditedRef.current = false;
+      phoneNoteEditedRef.current = false;
       setNotice(t('notices.selectedRemoved'), 'info');
     }
   }, [appointments, editingId, t]);
@@ -1700,37 +2327,194 @@ function App() {
   const displayPhoneValue = useMemo(() => formatPhoneForDisplay(form.phone), [form.phone]);
 
   const handlePhoneInputChange = useCallback((value: string) => {
+    const phone = normalizePhoneInput(value);
+    if (phone !== formRef.current.phone) {
+      phoneLookupRequestIdRef.current += 1;
+      setPhoneLookupError(null);
+    }
     setForm((current) => ({
       ...current,
-      phone: normalizePhoneInput(value),
+      phone,
     }));
   }, []);
+
+  const commitPhoneInputEdit = useCallback((edit: ReturnType<typeof applyPhoneInputEdit>) => {
+    if (!edit.changed) {
+      const input = phoneInputRef.current;
+      if (input) {
+        input.value = formatPhoneForDisplay(edit.digits);
+        input.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+      }
+      return;
+    }
+
+    pendingPhoneSelectionRef.current = {
+      digits: edit.digits,
+      selectionStart: edit.selectionStart,
+      selectionEnd: edit.selectionEnd,
+    };
+    handlePhoneInputChange(edit.digits);
+  }, [handlePhoneInputChange]);
+
+  const handlePhoneBeforeInput = useCallback((input: HTMLInputElement, nativeEvent: InputEvent) => {
+    if (nativeEvent.isComposing) {
+      return;
+    }
+
+    const selectionStart = input.selectionStart ?? input.value.length;
+    const selectionEnd = input.selectionEnd ?? selectionStart;
+    const inputType = nativeEvent.inputType ?? '';
+    const data = nativeEvent.data
+      || nativeEvent.dataTransfer?.getData('text/plain')
+      || nativeEvent.dataTransfer?.getData('text')
+      || phonePasteDataRef.current;
+    phonePasteDataRef.current = null;
+    const snapshot = {
+      digits: formRef.current.phone,
+      selectionStart,
+      selectionEnd,
+      inputType,
+      data,
+    };
+    phoneBeforeInputRef.current = snapshot;
+
+    if (nativeEvent.cancelable && (inputType.startsWith('delete') || inputType.startsWith('insert'))) {
+      nativeEvent.preventDefault();
+      phoneBeforeInputRef.current = null;
+      commitPhoneInputEdit(applyPhoneInputEdit(
+        snapshot.digits,
+        input.value,
+        selectionStart,
+        selectionEnd,
+        inputType,
+        data,
+      ));
+    }
+  }, [commitPhoneInputEdit]);
+
+  const handlePhonePaste = useCallback((event: React.ClipboardEvent<HTMLInputElement>) => {
+    phonePasteDataRef.current = event.clipboardData.getData('text/plain')
+      || event.clipboardData.getData('text')
+      || null;
+  }, []);
+
+  phoneBeforeInputHandlerRef.current = handlePhoneBeforeInput;
+  const attachPhoneInput = useCallback((input: HTMLInputElement | null) => {
+    const previousInput = phoneInputRef.current;
+    const previousListener = phoneBeforeInputListenerRef.current;
+    if (previousInput && previousListener) {
+      previousInput.removeEventListener('beforeinput', previousListener);
+    }
+
+    phoneInputRef.current = input;
+    phoneBeforeInputListenerRef.current = null;
+    if (!input) {
+      return;
+    }
+
+    const listener: EventListener = (event) => {
+      phoneBeforeInputHandlerRef.current?.(input, event as InputEvent);
+    };
+    phoneBeforeInputListenerRef.current = listener;
+    input.addEventListener('beforeinput', listener);
+  }, []);
+
+  const reconcilePhoneInputChange = useCallback((
+    input: HTMLInputElement,
+    inputType = '',
+    isComposing = false,
+  ) => {
+    if (isComposing) {
+      return;
+    }
+
+    phonePasteDataRef.current = null;
+    const snapshot = phoneBeforeInputRef.current;
+    phoneBeforeInputRef.current = null;
+    const currentDigits = snapshot?.digits ?? formRef.current.phone;
+    const selectionStart = input.selectionStart ?? input.value.length;
+
+    if (
+      snapshot
+      && snapshot.digits === formRef.current.phone
+      && (!inputType || inputType === snapshot.inputType)
+    ) {
+      const operationType = snapshot.inputType;
+      const edit = operationType.startsWith('delete')
+        || (operationType.startsWith('insert') && snapshot.data !== null)
+        ? applyPhoneInputEdit(
+          snapshot.digits,
+          formatPhoneForDisplay(snapshot.digits),
+          snapshot.selectionStart,
+          snapshot.selectionEnd,
+          operationType,
+          snapshot.data,
+        )
+        : reconcilePhoneInputValue(currentDigits, input.value, selectionStart);
+      commitPhoneInputEdit(edit);
+      return;
+    }
+
+    commitPhoneInputEdit(reconcilePhoneInputValue(currentDigits, input.value, selectionStart));
+  }, [commitPhoneInputEdit]);
 
   useEffect(() => {
     if (editingId || !auth?.accessToken || !/^\d{10}$/.test(form.phone)) {
       return;
     }
 
+    const requestId = ++phoneLookupRequestIdRef.current;
+    const requestAuth = auth;
+    const requestedPhone = form.phone;
+    const requestedName = form.customerName;
+    const requestedNote = form.note;
     let active = true;
-    void fetchJson(`/appointments/customer-lookup?phone=${encodeURIComponent(form.phone)}`)
+    void fetchJson(`/appointments/customer-lookup?phone=${encodeURIComponent(requestedPhone)}`)
       .then((customer: { customerName?: string | null; note?: string | null }) => {
-        if (!active || (!customer.customerName && !customer.note)) {
+        if (
+          !active
+          || requestId !== phoneLookupRequestIdRef.current
+          || !isSameShopContext(requestAuth)
+          || formRef.current.phone !== requestedPhone
+        ) {
           return;
         }
 
         setForm((current) => ({
           ...current,
-          customerName: customer.customerName ?? current.customerName,
-          note: customer.note ?? current.note,
+          customerName: !phoneNameEditedRef.current && current.customerName === requestedName
+            ? customer.customerName ?? current.customerName
+            : current.customerName,
+          note: !phoneNoteEditedRef.current && current.note === requestedNote
+            ? customer.note ?? current.note
+            : current.note,
         }));
+        setPhoneLookupError(null);
       })
-      .catch(() => {
+      .catch((error) => {
+        if (
+          !active
+          || requestId !== phoneLookupRequestIdRef.current
+          || !isSameShopContext(requestAuth)
+          || formRef.current.phone !== requestedPhone
+        ) {
+          return;
+        }
+        const detail = getDisplayError(error, t('notices.phoneLookupFailed'));
+        if (detail === t('notices.sessionExpired')) {
+          return;
+        }
+        setPhoneLookupError({
+          phone: requestedPhone,
+          shopId: requestAuth.activeShopId ?? null,
+          message: t('notices.phoneLookupFailedDetail', { error: detail }),
+        });
       });
 
     return () => {
       active = false;
     };
-  }, [auth?.accessToken, editingId, form.phone]);
+  }, [auth, editingId, form.phone, phoneLookupRetry, t]);
 
   const todaySummary = useMemo(() => {
     const now = new Date();
@@ -1762,38 +2546,19 @@ function App() {
 
   const manageableUsers = useMemo(() => {
     if (!auth) {
-      return users.filter((user) => !isPendingAssignmentEmployee(user, pendingAssignmentRuntime));
+      return adminUsers.filter((user) => !isPendingAssignmentEmployee(user, pendingAssignmentRuntime));
     }
 
-    return users.filter((user) => user.id !== auth.user.id && !isPendingAssignmentEmployee(user, pendingAssignmentRuntime));
-  }, [users, auth, pendingAssignmentRuntime]);
+    return adminUsers.filter((user) => user.id !== auth.user.id && !isPendingAssignmentEmployee(user, pendingAssignmentRuntime));
+  }, [adminUsers, auth, pendingAssignmentRuntime]);
 
   const passwordResetUsers = useMemo(
-    () => users.filter((user) => !isPendingAssignmentEmployee(user, pendingAssignmentRuntime)),
-    [users, pendingAssignmentRuntime],
+    () => adminUsers.filter((user) => !isPendingAssignmentEmployee(user, pendingAssignmentRuntime)),
+    [adminUsers, pendingAssignmentRuntime],
   );
 
-  const formatAuditPayloadPreview = useCallback((payload: unknown) => {
-    if (!payload || typeof payload !== 'object') {
-      return '-';
-    }
-
-    const data = payload as Record<string, unknown>;
-    const fields = ['status', 'employeeId', 'startAt', 'endAt', 'displayName', 'role', 'phone', 'price'] as const;
-    const summary = fields
-      .filter((field) => data[field] !== undefined && data[field] !== null)
-      .map((field) => `${field}: ${String(data[field])}`)
-      .slice(0, 4);
-
-    if (summary.length === 0) {
-      return '-';
-    }
-
-    return summary.join(' | ');
-  }, []);
-
   const handleRefreshLogs = useCallback(async () => {
-    if (!auth || !isAdminRole(auth.user.role)) {
+    if (!auth || (!isAdminRole(auth.user.role) && !isManagerRole(auth.user.role))) {
       return;
     }
 
@@ -1802,11 +2567,11 @@ function App() {
       await loadAuditLogs();
       setNotice(t('notices.logsRefreshed'), 'success');
     } catch (error) {
-      setNotice(getDisplayError(error, t('notices.refreshLogsFailed')), 'error');
+      showOperationError(getDisplayError(error, t('notices.refreshLogsFailed')));
     } finally {
       setLogsLoading(false);
     }
-  }, [auth, loadAuditLogs, t]);
+  }, [auth, loadAuditLogs, showOperationError, t]);
 
   const filteredAppointments = useMemo(() => {
     if (employeeFilter === 'all') {
@@ -1852,6 +2617,14 @@ function App() {
     setSelectedDate(anchorDate ? new Date(anchorDate) : new Date(info.start));
   }, []);
 
+  const handleCalendarDateChoose = useCallback((value: string) => {
+    const localDate = parseUsDateInput(value);
+    const api = calendarRef.current?.getApi();
+    if (!localDate || !api) return;
+    api.gotoDate(localDate);
+    setSelectedDate(new Date(api.getDate()));
+  }, []);
+
   const handleMobileCalendarNavigate = useCallback((action: 'prev' | 'next' | 'today') => {
     const api = calendarRef.current?.getApi();
     if (!api) {
@@ -1863,28 +2636,26 @@ function App() {
     } else if (action === 'next') {
       api.next();
     } else {
-      const today = new Date();
-      api.gotoDate(today);
-      setSelectedDate(today);
-      return;
+      api.gotoDate(new Date());
     }
 
-    setSelectedDate(api.getDate());
+    setSelectedDate(new Date(api.getDate()));
   }, []);
 
   const renderCalendarEventContent = useCallback((eventContent: EventContentArg) => {
     const note = resolveCalendarEventNote(eventContent.event);
     const isCancelled = String(eventContent.event.extendedProps.status ?? '').trim().toUpperCase() === 'CANCELLED';
-
+    const start = eventContent.event.start;
+    // Appointment end is required by the domain. Never display FullCalendar's
+    // default duration as a real end when a malformed record is missing endAt.
+    const actualEndAt = eventContent.event.extendedProps.actualEndAt;
+    const end = actualEndAt ? eventContent.event.end : null;
     return (
-      <div className="calendar-event-content">
-        <div className="calendar-event-time">{eventContent.timeText}</div>
-        <div className="calendar-event-title">{eventContent.event.title}</div>
-        {isCancelled ? <div className="calendar-event-status-badge">{t('status.cancelled')}</div> : null}
-        {note ? <div className="calendar-event-note">{note}</div> : null}
-      </div>
+      <CalendarEventBox start={start} end={end} locale={locale}
+        title={eventContent.event.title} note={note}
+        cancelledLabel={isCancelled ? t('status.cancelled') : undefined} />
     );
-  }, [t]);
+  }, [t, locale]);
 
   const calendarNoteTooltipText = useMemo<CalendarNoteTooltipText>(() => ({
     closeButtonLabel: t('tooltip.close'),
@@ -1948,6 +2719,7 @@ function App() {
           classNames,
           extendedProps: {
             appointmentId: appointment.id,
+            actualEndAt: appointment.endAt,
             employeeId: appointment.employeeId,
             employeeName: getAppointmentDisplayName(appointment),
             status: appointment.status,
@@ -1969,6 +2741,7 @@ function App() {
   if (isAuthBootstrapping) {
     return (
       <div className="app-shell">
+        <OperationErrorDialog message={operationError} onClose={closeOperationError} />
         <div className="card">
           <h1>{t('app.title')}</h1>
           <p>{t('login.signingIn')}</p>
@@ -1980,6 +2753,7 @@ function App() {
   if (!auth && shopSelection) {
     return (
       <div className="app-shell">
+        <OperationErrorDialog message={operationError} onClose={closeOperationError} />
         <div className="modal-overlay" role="dialog" aria-modal="true">
           <div className="card">
             <h1>{t('app.title')}</h1>
@@ -2002,16 +2776,29 @@ function App() {
                     </button>
                   ))}
                 </div>
-                <button
-                  type="button"
-                  disabled={loading || !selectedShopId}
-                  onClick={() => void confirmShopSelection(selectedShopId)}
-                >
-                  {t('shopSelect.confirm')}
-                </button>
+                {!shopSelection.shops.length ? (
+                  <>
+                    {!shopSelection.error ? <p className="hint">{t('shopSelect.noShopsAvailable')}</p> : null}
+                    <button
+                      type="button"
+                      disabled={loading}
+                      onClick={() => void beginShopSelection(shopSelection.authForRequest)}
+                    >
+                      {t('shopSelect.retry')}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={loading || !selectedShopId}
+                    onClick={() => void confirmShopSelection(selectedShopId)}
+                  >
+                    {t('shopSelect.confirm')}
+                  </button>
+                )}
               </div>
             )}
-            {shopSelection.error ? <p className="message error">{shopSelection.error}</p> : null}
+            <button type="button" onClick={cancelShopSelection}>{t('shopSelect.returnToSignIn')}</button>
             {message ? <p className={`message ${messageTone}`}>{message}</p> : null}
           </div>
         </div>
@@ -2022,6 +2809,7 @@ function App() {
   if (!auth) {
     return (
       <div className="app-shell">
+        <OperationErrorDialog message={operationError} onClose={closeOperationError} />
         <div className="card">
           <h1>{t('app.title')}</h1>
           <p>{t('login.subtitle')}</p>
@@ -2043,15 +2831,26 @@ function App() {
   }
 
   const isAdmin = isAdminRole(auth.user.role);
+  const isManager = isManagerRole(auth.user.role);
+  const canViewOverviewAndLogs = isAdmin || isManager;
   const canSwitchShop = canSwitchShopRole(auth.user.role);
-  const showCalendarPanel = !isAdmin || adminPanel === 'calendar';
-  const showOverviewPanel = isAdmin && adminPanel === 'overview';
+  const showCalendarPanel = !canViewOverviewAndLogs || adminPanel === 'calendar';
+  const showOverviewPanel = canViewOverviewAndLogs && adminPanel === 'overview';
   const showAdminPanel = isAdmin && adminPanel === 'admin';
-  const showLogsPanel = isAdmin && adminPanel === 'logs';
-  const currentShopName = availableShops.find((shop) => shop.id === auth.activeShopId)?.name ?? auth.activeShopId ?? '';
+  const showLogsPanel = canViewOverviewAndLogs && adminPanel === 'logs';
+  const currentShopName = (
+    availableShopsUserIdRef.current === auth.user.id
+      ? availableShops.find((shop) => shop.id === auth.activeShopId)?.name
+      : undefined
+  ) ?? auth.activeShopId ?? '';
+  const currentPhoneLookupError = phoneLookupError?.phone === form.phone
+    && phoneLookupError.shopId === auth.activeShopId
+    ? phoneLookupError
+    : null;
 
   return (
     <div className="app-shell">
+      <OperationErrorDialog message={operationError} onClose={closeOperationError} />
       {shopSelection ? (
         <div className="modal-overlay" role="dialog" aria-modal="true">
           <div className="card">
@@ -2075,25 +2874,48 @@ function App() {
                   ))}
                 </div>
                 <div className="stack-row">
-                  <button
-                    type="button"
-                    disabled={loading || !selectedShopId}
-                    onClick={() => void confirmShopSelection(selectedShopId)}
-                  >
-                    {t('shopSelect.confirm')}
-                  </button>
-                  <button type="button" onClick={cancelShopSelection}>{t('shopSelect.cancel')}</button>
+                  {shopSelection.shops.length ? (
+                    <button
+                      type="button"
+                      disabled={loading || !selectedShopId}
+                      onClick={() => void confirmShopSelection(selectedShopId)}
+                    >
+                      {t('shopSelect.confirm')}
+                    </button>
+                  ) : (
+                    <>
+                      {!shopSelection.error ? <p className="hint">{t('shopSelect.noShopsAvailable')}</p> : null}
+                      <button
+                        type="button"
+                        disabled={loading}
+                        onClick={() => void beginShopSelection(shopSelection.authForRequest)}
+                      >
+                        {t('shopSelect.retry')}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
-            {shopSelection.error ? <p className="message error">{shopSelection.error}</p> : null}
+            <button type="button" onClick={cancelShopSelection}>{t('shopSelect.cancel')}</button>
           </div>
         </div>
       ) : null}
+      {(Object.entries(readErrors) as [ReadErrorKey, string][])
+        .filter(([key]) => !(shopSelection && key === 'shopNames'))
+        .map(([key, text]) => (
+        <div className="message error read-recovery-banner" role="alert" key={key}>
+          <span>{text}</span>
+          <button type="button" onClick={() => void retryRead(key)}>{t('actions.retry')}</button>
+        </div>
+      ))}
       <header className="topbar">
         <div>
           <h1>{t('app.title')}</h1>
-          <p>{t('topbar.signedInAs', { displayName: auth.user.displayName, role: auth.user.role })}</p>
+          <p>{t('topbar.signedInAs', {
+            displayName: auth.user.displayName,
+            role: ROLE_MESSAGES[auth.user.role] ? t(ROLE_MESSAGES[auth.user.role]) : auth.user.role,
+          })}</p>
         </div>
         <div className="topbar-actions">
           {canSwitchShop ? (
@@ -2124,7 +2946,7 @@ function App() {
 
       {message ? <p className={`message ${messageTone}`}>{message}</p> : null}
 
-      {isAdmin ? (
+      {canViewOverviewAndLogs ? (
         <div className="panel-tabs" role="tablist" aria-label="Dashboard sections">
           <button
             type="button"
@@ -2142,14 +2964,14 @@ function App() {
           >
             {t('tabs.overview')}
           </button>
-          <button
+          {isAdmin ? <button
             type="button"
             className={adminPanel === 'admin' ? 'active' : ''}
             aria-selected={adminPanel === 'admin'}
             onClick={() => setAdminPanel('admin')}
           >
             {t('tabs.admin')}
-          </button>
+          </button> : null}
           <button
             type="button"
             className={adminPanel === 'logs' ? 'active' : ''}
@@ -2177,24 +2999,14 @@ function App() {
                   </div>
                 </div>
               ) : null}
-              <form onSubmit={handleCreateOrUpdate} className="stack">
+              <form onInvalidCapture={event => {
+                event.preventDefault();
+                showOperationError((event.target as HTMLInputElement).validationMessage);
+              }} onSubmit={handleCreateOrUpdate} className="stack">
                 <div className="row party-employee-row">
                   <label className="party-size-field">
                     <span className="field-label">{t('editor.partySize')}</span>
-                    <div className="row quick-date-shortcuts party-size-control">
-                      <button
-                        type="button"
-                        disabled={partySizeValue <= 1}
-                        onClick={() => setForm((current) => {
-                          const currentValue = parseInt(current.partySize, 10) || 1;
-                          const nextValue = Math.max(1, currentValue - 1);
-                          // Trim excess assigned employees to fit the reduced party size.
-                          const employeeIds = current.employeeIds.slice(0, nextValue);
-                          return { ...current, partySize: String(nextValue), employeeIds };
-                        })}
-                      >
-                        -1
-                      </button>
+                    <div className="party-size-control">
                       <input
                         type="number"
                         min={1}
@@ -2209,23 +3021,20 @@ function App() {
                           return { ...current, partySize: String(clamped), employeeIds };
                         })}
                       />
-                      <button
-                        type="button"
-                        disabled={partySizeValue >= 99}
-                        onClick={() => setForm((current) => ({
-                          ...current,
-                          partySize: String(Math.min(99, (parseInt(current.partySize, 10) || 1) + 1)),
-                        }))}
-                      >
-                        +1
-                      </button>
                     </div>
                   </label>
-                  <label className="employee-field">
-                    <span className="field-label">{t('editor.employee')}</span>
+                  <div className="employee-field appointment-field">
+                    <span className="field-label">
+                      <label htmlFor="appointment-employees">{t('editor.employee')}</label>
+                      <FieldHelp id="employee-help" label={t('editor.employeeHelp')}
+                        text={pendingAutoCount > 0
+                          ? t('editor.pendingAutoHint', { count: String(pendingAutoCount) })
+                          : t('editor.pendingNone')} />
+                    </span>
                     <div className="employee-dropdown">
                       <button
                         type="button"
+                        id="appointment-employees"
                         className="employee-dropdown-toggle"
                         aria-expanded={employeeDropdownOpen}
                         aria-haspopup="listbox"
@@ -2256,7 +3065,7 @@ function App() {
                                       return;
                                     }
                                     if (form.employeeIds.length >= partySizeValue) {
-                                      setNotice(t('notices.employeeCapReached'), 'error');
+                                      showOperationError(t('notices.employeeCapReached'));
                                       return;
                                     }
                                     setForm((current) => ({
@@ -2265,29 +3074,26 @@ function App() {
                                     }));
                                   }}
                                 />
-                                {user.displayName}
+                                {user.displayName}{isManagerRole(user.role) ? ` • ${t('role.MANAGER')}` : ''}
                               </label>
                             );
                           })}
                         </div>
                       ) : null}
                     </div>
-                    <span className="hint">
-                      {pendingAutoCount > 0
-                        ? t('editor.pendingAutoHint', { count: String(pendingAutoCount) })
-                        : t('editor.pendingNone')}
-                    </span>
-                  </label>
+                  </div>
                 </div>
                 <div className="row">
-                  <label>
+                  <div className="appointment-field">
                     <span className="field-label">
-                      {t('editor.startDate')} <span className="required-indicator" aria-hidden="true">*</span>
+                      <label htmlFor="appointment-start-date">{t('editor.startDate')} <span className="required-indicator" aria-hidden="true">*</span></label>
+                      <FieldHelp id="start-date-help" text={t('editor.dateHint')} label={t('editor.startDateHelp')} />
                       <span className="field-label-note" aria-live="polite">
                         {startDateWeekdayLabel ? startDateWeekdayLabel : t('editor.invalidDate')}
                       </span>
                     </span>
                     <input
+                      id="appointment-start-date"
                       type="text"
                       inputMode="numeric"
                       placeholder={t('editor.startDatePlaceholder')}
@@ -2298,48 +3104,104 @@ function App() {
                       onChange={(e) => setForm({ ...form, startDate: e.target.value })}
                     />
                     <div className="quick-date-shortcuts" role="group" aria-label={t('editor.quickDateAria')}>
-                      <button
-                        type="button"
-                        onClick={() => applyStartDateShortcut('minus1')}
-                        disabled={!canApplyMinusOneStartDate}
-                      >
-                        {t('shortcut.prevDay')}
-                      </button>
-                      <button type="button" onClick={() => applyStartDateShortcut('today')}>{t('shortcut.today')}</button>
-                      <button type="button" onClick={() => applyStartDateShortcut('plus1')}>{t('shortcut.plus1')}</button>
-                      <button type="button" onClick={() => applyStartDateShortcut('plus3')}>{t('shortcut.plus3')}</button>
-                      <button type="button" onClick={() => applyStartDateShortcut('plus7')}>{t('shortcut.plus7')}</button>
+                      <button type="button" onClick={applyToday}>{t('shortcut.today')}</button>
+                      <NativeDateChooser value={form.startDate}
+                        onChange={(startDate) => setForm((current) => ({ ...current, startDate }))}
+                        onError={(error) => showOperationError(t('editor.datePickerFailed', {
+                          error: error instanceof Error ? error.message : String(error),
+                        }))} />
                     </div>
-                    <span className="hint">{t('editor.dateHint')}</span>
-                  </label>
-                  <label>
+                  </div>
+                  <div className="start-time-field">
                     <span className="field-label">
-                      {t('editor.startTime')} <span className="required-indicator" aria-hidden="true">*</span>
+                      <label htmlFor="appointment-start-time">
+                        {t('editor.startTime')} <span className="required-indicator" aria-hidden="true">*</span>
+                      </label>
+                      <FieldHelp id="start-time-help" text={t('editor.startTimeHint')} label={t('editor.startTimeHelp')} />
                     </span>
                     <input
+                      id="appointment-start-time"
                       type="text"
-                      inputMode="text"
+                      inputMode="numeric"
                       autoCapitalize="off"
                       autoCorrect="off"
                       aria-label={t('editor.startTime')}
-                      placeholder="14:30 / 2:30 / 2"
+                      placeholder={t('editor.startTimePlaceholder')}
+                      aria-invalid={startTimeError ? true : undefined}
+                      aria-describedby={`start-time-help${startTimeError ? ' start-time-error' : ''}`}
                       value={form.startTime}
-                      onChange={(e) => setForm({ ...form, startTime: e.target.value })}
-                      onBlur={() => {
-                        const parsed = parseStartTimeInput(form.startTime);
-                        if (parsed) {
-                          setForm((current) => ({ ...current, startTime: parsed.normalized }));
+                      onFocus={() => {
+                        setForm((current) => /^\d{1,2}:\d{2}$/.test(current.startTime)
+                          ? { ...current, startTime: current.startTime.replace(':', '') }
+                          : current);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.ctrlKey || event.metaKey || event.altKey || event.nativeEvent.isComposing) return;
+                        if (event.key.length === 1 && !/^\d$/.test(event.key)) {
+                          event.preventDefault();
+                          rejectStartTimeInput();
+                        } else if (/^\d$/.test(event.key)) {
+                          const input = event.currentTarget;
+                          if (input.value.length - ((input.selectionEnd ?? 0) - (input.selectionStart ?? 0)) >= 4) {
+                            event.preventDefault();
+                            rejectStartTimeInput();
+                          }
+                        }
+                      }}
+                      onPaste={(event) => {
+                        const input = event.currentTarget;
+                        const pasted = event.clipboardData.getData('text');
+                        const next = input.value.slice(0, input.selectionStart ?? 0)
+                          + pasted + input.value.slice(input.selectionEnd ?? input.value.length);
+                        if (!/^\d*$/.test(pasted) || next.length > 4) {
+                          event.preventDefault();
+                          rejectStartTimeInput();
+                        }
+                      }}
+                      onChange={(e) => {
+                        if (!/^\d{0,4}$/.test(e.target.value)) {
+                          rejectStartTimeInput();
+                          return;
+                        }
+                        clearStartTimeError();
+                        appointmentStartTimeEditedRef.current = true;
+                        setForm((current) => ({ ...current, startTime: e.target.value }));
+                      }}
+                      onBlur={(event) => {
+                        if (rejectedStartTimeInputRef.current) return;
+                        if (editingId && !appointmentStartTimeEditedRef.current && originalEditingStartAtRef.current) {
+                          const normalized = formatAppointmentTimeInput(originalEditingStartAtRef.current);
+                          setForm((current) => ({ ...current, startTime: normalized }));
+                          return;
+                        }
+                        const resolution = resolveStartTimeInput(event.currentTarget.value);
+                        if (resolution.status === 'valid') {
+                          clearStartTimeError();
+                          setForm((current) => ({
+                            ...current,
+                            startTime: resolution.parsed.normalized,
+                          }));
+                        } else {
+                          setStartTimeError(startTimeErrorKey(resolution.status));
                         }
                       }}
                     />
-                  </label>
+                    {startTimeError && <span id="start-time-error" className="hint error" role="status">
+                      {t(startTimeError, {
+                        start: calendarWindow.slotMinTime.slice(0, 5),
+                        end: calendarWindow.slotMaxTime.slice(0, 5),
+                      })}
+                    </span>}
+                  </div>
                 </div>
                 <div className="row">
-                  <label>
+                  <div className="appointment-field">
                     <span className="field-label">
-                      {t('editor.duration')} <span className="required-indicator" aria-hidden="true">*</span>
+                      <label htmlFor="appointment-duration">{t('editor.duration')} <span className="required-indicator" aria-hidden="true">*</span></label>
+                      <FieldHelp id="duration-help" text={t('editor.previewPlaceholder')} label={t('editor.durationHelp')} />
                     </span>
                     <input
+                      id="appointment-duration"
                       type="number"
                       min={0}
                       step={5}
@@ -2358,10 +3220,10 @@ function App() {
                         </button>
                       ))}
                     </div>
-                    <span className={`hint ${durationPreview.crossesDay ? 'duration-preview-error' : ''}`}>
+                    {durationPreview.text && <span className={`hint ${durationPreview.crossesDay ? 'duration-preview-error' : ''}`}>
                       {durationPreview.text}
-                    </span>
-                  </label>
+                    </span>}
+                  </div>
                 </div>
                 <div className="row">
                   <label>
@@ -2369,13 +3231,31 @@ function App() {
                       {t('editor.phone')} <span className="required-indicator" aria-hidden="true">*</span>
                     </span>
                     <input
+                      ref={attachPhoneInput}
                       type="text"
                       inputMode="numeric"
                       autoComplete="tel"
                       placeholder="(___)___-____"
                       value={displayPhoneValue}
-                      onChange={(e) => handlePhoneInputChange(e.target.value)}
+                      onPaste={handlePhonePaste}
+                      onChange={(event) => {
+                        const nativeEvent = event.nativeEvent as InputEvent;
+                        reconcilePhoneInputChange(
+                          event.currentTarget,
+                          nativeEvent.inputType,
+                          nativeEvent.isComposing,
+                        );
+                      }}
+                      onCompositionEnd={(event) => reconcilePhoneInputChange(event.currentTarget)}
                     />
+                    {currentPhoneLookupError ? (
+                      <span className="message error phone-lookup-notice" role="status" aria-live="polite">
+                        {currentPhoneLookupError.message}
+                        <button type="button" onClick={() => setPhoneLookupRetry((current) => current + 1)}>
+                          {t('actions.retry')}
+                        </button>
+                      </span>
+                    ) : null}
                   </label>
                   <label>
                     <span className="field-label">
@@ -2386,16 +3266,37 @@ function App() {
                 </div>
                 <label>
                   {t('editor.customerName')}
-                  <input value={form.customerName} onChange={(e) => setForm({ ...form, customerName: e.target.value })} />
+                  <input
+                    value={form.customerName}
+                    onChange={(e) => {
+                      phoneNameEditedRef.current = true;
+                      setForm((current) => ({ ...current, customerName: e.target.value }));
+                    }}
+                  />
                 </label>
                 <label>
                   {t('editor.note')}
-                  <textarea value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
+                  <textarea
+                    value={form.note}
+                    onChange={(e) => {
+                      phoneNoteEditedRef.current = true;
+                      setForm((current) => ({ ...current, note: e.target.value }));
+                    }}
+                  />
                 </label>
                 <div className="row">
                   <button type="submit" disabled={loading || isSelectedAppointmentCancelled}>{editingId ? t('actions.updateAppointment') : t('actions.createAppointment')}</button>
-                  {editingId ? <button type="button" onClick={() => { setEditingId(null); setForm(createInitialForm()); }}>{t('actions.cancel')}</button> : null}
-                  {editingId ? <button type="button" className={isAdmin ? 'danger-action' : ''} disabled={loading || (!isAdmin && isSelectedAppointmentCancelled)} onClick={() => void handleDelete(editingId)}>{isAdmin ? t('actions.deleteAppointment') : t('actions.cancelAppointment')}</button> : null}
+                  {editingId ? <button type="button" onClick={() => {
+                    setEditingId(null);
+                    setForm(createInitialForm());
+                    originalEditingStartAtRef.current = null;
+                    appointmentStartTimeEditedRef.current = false;
+                    clearStartTimeError();
+                    phoneNameEditedRef.current = false;
+                    phoneNoteEditedRef.current = false;
+                  }}>{t('actions.cancel')}</button> : null}
+                  {editingId ? <button type="button" disabled={loading || isSelectedAppointmentCancelled} onClick={() => void handleCancelAppointment(editingId)}>{t('actions.cancelAppointment')}</button> : null}
+                  {editingId && (isAdmin || isManager) ? <button type="button" className="danger-action" disabled={loading} onClick={() => void handleDelete(editingId)}>{t('actions.deleteAppointment')}</button> : null}
                 </div>
               </form>
             </section>
@@ -2411,14 +3312,6 @@ function App() {
                   </div>
                 </div>
                 <div className="toolbar">
-                  <select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)}>
-                    <option value="all">{t('calendar.allEmployees')}</option>
-                    {employeeOptions.map((user) => (
-                      <option key={user.id} value={user.id}>
-                        {isPendingAssignmentEmployee(user, pendingAssignmentRuntime) ? t('editor.pendingAssignment') : user.displayName}
-                      </option>
-                    ))}
-                  </select>
                   <div className="toggle-row">
                     <button
                       type="button"
@@ -2430,12 +3323,30 @@ function App() {
                     <button type="button" className={calendarView === 'timeGridDay' ? 'active' : ''} onClick={() => setCalendarView('timeGridDay')}>{t('calendar.viewDay')}</button>
                   </div>
                 </div>
-                <div className="legend">
+                <div className="legend" role="group" aria-label={t('editor.employee')}>
+                  <button
+                    type="button"
+                    className={`legend-item legend-filter-button${employeeFilter === 'all' ? ' active' : ''}`}
+                    aria-pressed={employeeFilter === 'all'}
+                    onClick={() => setEmployeeFilter('all')}
+                  >
+                    {t('calendar.allEmployees')}
+                  </button>
                   {employeeOptions.map((user) => (
-                    <div key={user.id} className="legend-item">
+                    <button
+                      key={user.id}
+                      type="button"
+                      className={`legend-item legend-filter-button${employeeFilter === user.id ? ' active' : ''}`}
+                      aria-pressed={employeeFilter === user.id}
+                      onClick={() => setEmployeeFilter(user.id)}
+                    >
                       <span className="legend-swatch" style={{ backgroundColor: getEmployeeColor(user.id) }} />
-                      <span>{isPendingAssignmentEmployee(user, pendingAssignmentRuntime) ? t('editor.pendingAssignment') : user.displayName}</span>
-                    </div>
+                      <span>
+                        {isPendingAssignmentEmployee(user, pendingAssignmentRuntime)
+                          ? t('editor.pendingAssignment')
+                          : `${user.displayName}${isManagerRole(user.role) ? ` • ${t('role.MANAGER')}` : ''}`}
+                      </span>
+                    </button>
                   ))}
                 </div>
                 <div className="date-strip" aria-label={t('calendar.dateNavAria')}>
@@ -2444,10 +3355,18 @@ function App() {
                     <button type="button" onClick={() => handleMobileCalendarNavigate('today')}>{t('shortcut.today')}</button>
                     <button type="button" onClick={() => handleMobileCalendarNavigate('next')}>{t('calendar.next')}</button>
                   </div>
-                  <div className="date-strip-label">{selectedDateLabel}</div>
+                  <NativeDateChooser value={formatDateForUsInput(selectedDate)}
+                    triggerContent={selectedDateLabel} accessibleLabel={selectedDateLabel}
+                    className="calendar-date-chooser" triggerClassName="date-strip-label"
+                    onChange={handleCalendarDateChoose}
+                    onError={(error) => showOperationError(t('editor.datePickerFailed', {
+                      error: error instanceof Error ? error.message : String(error),
+                    }))} />
                 </div>
               </div>
-              <div className="calendar-frame">
+              <CalendarFrame ready={calendarWindowReady} layoutKey={calendarView}
+                slotMinTime={displayCalendarWindow.slotMinTime} slotMaxTime={displayCalendarWindow.slotMaxTime}
+                consumed={initialCalendarScrollConsumed}>
                 <FullCalendar
                   ref={calendarRef}
                   key={calendarView}
@@ -2455,14 +3374,16 @@ function App() {
                   initialView={calendarView}
                   initialDate={selectedDate}
                   headerToolbar={false}
+                  slotEventOverlap={false}
                   views={{
                     timeGridWeek: {
-                      slotEventOverlap: false,
                       eventMinHeight: 22,
                     },
                     timeGridThreeDay: {
                       type: 'timeGrid',
                       duration: { days: 3 },
+                      dateAlignment: 'day',
+                      dateIncrement: { days: 3 },
                     },
                   }}
                   dayHeaderContent={(arg) => (
@@ -2472,15 +3393,17 @@ function App() {
                     </div>
                   )}
                   allDaySlot={false}
-                  slotMinTime={calendarWindow.slotMinTime}
-                  slotMaxTime={calendarWindow.slotMaxTime}
+                  nowIndicator={true}
+                  slotMinTime={displayCalendarWindow.slotMinTime}
+                  slotMaxTime={displayCalendarWindow.slotMaxTime}
                   slotDuration="00:30:00"
                   snapDuration="00:30:00"
                   slotLabelInterval="01:00:00"
                   slotLabelFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
-                  eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: false }}
+                  eventTimeFormat={{ hour: '2-digit', minute: '2-digit', hour12: true, meridiem: 'short' }}
                   editable={true}
                   selectable={true}
+                  selectAllow={(selection) => allowCalendarStart(selection.start)}
                   selectMirror={true}
                   progressiveEventRendering={true}
                   rerenderDelay={40}
@@ -2499,7 +3422,7 @@ function App() {
                     }
                   }}
                 />
-              </div>
+              </CalendarFrame>
               <div className="day-agenda" aria-live="polite">
                 <div className="agenda-header">
                   <h3>{t('agenda.title')}</h3>
@@ -2532,7 +3455,7 @@ function App() {
                           key={appointment.id}
                           type="button"
                           className={`agenda-item${isCancelled ? ' agenda-item-cancelled' : ''}`}
-                          style={{ '--agenda-accent': isCancelled ? CANCELLED_APPOINTMENT_ACCENT : getEmployeeColor(appointment.employeeId) } as CSSProperties}
+                          style={{ '--agenda-accent': isCancelled ? CANCELLED_APPOINTMENT_ACCENT : getAppointmentColor(appointment) } as CSSProperties}
                           onClick={() => handleEdit(appointment)}
                         >
                           <div className="agenda-time">{formatAgendaTimeRange(appointment.startAt, appointment.endAt, locale)}</div>
@@ -2561,7 +3484,7 @@ function App() {
                                 key={appointment.id}
                                 type="button"
                                 className={`agenda-item${isCancelled ? ' agenda-item-cancelled' : ''}`}
-                                style={{ '--agenda-accent': isCancelled ? CANCELLED_APPOINTMENT_ACCENT : getEmployeeColor(appointment.employeeId) } as CSSProperties}
+                                style={{ '--agenda-accent': isCancelled ? CANCELLED_APPOINTMENT_ACCENT : getAppointmentColor(appointment) } as CSSProperties}
                                 onClick={() => handleEdit(appointment)}
                               >
                                 <div className="agenda-time">{formatAgendaTimeRange(appointment.startAt, appointment.endAt, locale)}</div>
@@ -2629,7 +3552,8 @@ function App() {
                   </div>
                   <div className="appointment-actions">
                     <button type="button" onClick={() => handleEdit(appointment)}>{t('actions.edit')}</button>
-                    <button type="button" onClick={() => void handleDelete(appointment.id)}>{isAdmin ? t('actions.delete') : t('actions.cancelShort')}</button>
+                    <button type="button" disabled={isCancelled} onClick={() => void handleCancelAppointment(appointment.id)}>{t('actions.cancelShort')}</button>
+                    {isAdmin || isManager ? <button type="button" onClick={() => void handleDelete(appointment.id)}>{t('actions.delete')}</button> : null}
                   </div>
                 </div>
               );
@@ -2644,7 +3568,10 @@ function App() {
           <div className="admin-block">
             <h3>{t('admin.calendarWindow')}</h3>
             <p className="hint">{t('admin.calendarWindowHint')}</p>
-            <form onSubmit={handleCalendarWindowSave} className="stack">
+            <form onInvalidCapture={event => {
+                event.preventDefault();
+                showOperationError((event.target as HTMLInputElement).validationMessage);
+              }} onSubmit={handleCalendarWindowSave} className="stack">
               <div className="row">
                 <label>
                   {t('admin.startTime')}
@@ -2673,7 +3600,10 @@ function App() {
             </form>
           </div>
 
-          <form onSubmit={handleAdminCreateUser} className="stack">
+          <form onInvalidCapture={event => {
+                event.preventDefault();
+                showOperationError((event.target as HTMLInputElement).validationMessage);
+              }} onSubmit={handleAdminCreateUser} className="stack">
             <label>
               {t('login.username')}
               <input
@@ -2737,7 +3667,10 @@ function App() {
           <div className="admin-block">
             <h3>{t('admin.passwordResetTitle')}</h3>
             <p className="hint">{t('admin.passwordResetHint')}</p>
-            <form onSubmit={handleAdminResetPassword} className="stack">
+            <form onInvalidCapture={event => {
+                event.preventDefault();
+                showOperationError((event.target as HTMLInputElement).validationMessage);
+              }} onSubmit={handleAdminResetPassword} className="stack">
               <label>
                 {t('admin.passwordTargetUser')}
                 <select
@@ -2771,7 +3704,7 @@ function App() {
               <div key={user.id} className="user-item">
                 <div>
                   <strong>{user.displayName}</strong>
-                  <div>{user.username} • {user.role}</div>
+                  <div>{user.username} • {ROLE_MESSAGES[user.role] ? t(ROLE_MESSAGES[user.role]) : user.role}</div>
                 </div>
                 <div className="user-actions">
                   <button
@@ -2810,22 +3743,91 @@ function App() {
           ) : (
             <div className="logs-list" role="list">
               {auditLogs.map((log) => (
-                <article key={log.id} className="logs-item" role="listitem">
-                  <div className="logs-row">
-                    <strong>{log.action}</strong>
-                    <span className="appointment-badge">{log.entityType}</span>
-                    <span className="hint">{new Date(log.createdAt).toLocaleString(locale)}</span>
-                  </div>
-                  <div className="logs-meta">
-                    <span>{t('logs.actor', { displayName: log.actor.displayName, username: log.actor.username })}</span>
-                    <span>{t('logs.role', { role: log.actor.role })}</span>
-                    <span>{t('logs.target', { entityType: log.entityType, entityId: log.entityId })}</span>
-                  </div>
-                  <div className="logs-diff">
-                    <div><span className="summary-label">{t('logs.before')}</span> {formatAuditPayloadPreview(log.beforePayload)}</div>
-                    <div><span className="summary-label">{t('logs.after')}</span> {formatAuditPayloadPreview(log.afterPayload)}</div>
-                  </div>
-                </article>
+                (() => {
+                  const actorSnapshot = isUnknownRecord(log.actorSnapshot)
+                    ? log.actorSnapshot
+                    : null;
+                  const shopSnapshot = isUnknownRecord(log.shopSnapshot)
+                    ? log.shopSnapshot
+                    : null;
+                  const actorName = typeof actorSnapshot?.displayName === 'string'
+                    ? actorSnapshot.displayName
+                    : log.actor.displayName;
+                  const actorUsername = typeof actorSnapshot?.username === 'string'
+                    ? actorSnapshot.username
+                    : log.actor.username;
+                  const actorRole = typeof actorSnapshot?.role === 'string'
+                    ? actorSnapshot.role
+                    : log.actor.role;
+                  const shopName = typeof shopSnapshot?.name === 'string'
+                    ? shopSnapshot.name
+                    : log.shop?.name ?? currentShopName;
+                  const presentation = getAuditPresentation(
+                    log.beforePayload,
+                    log.afterPayload,
+                    log.entityType,
+                    locale,
+                    (value) => new Date(value).toLocaleString(locale, {
+                      year: 'numeric',
+                      month: '2-digit',
+                      day: '2-digit',
+                      hour: 'numeric',
+                      minute: '2-digit',
+                      hour12: true,
+                    }),
+                    t('logs.noChangeDetails'),
+                    t('logs.noChanges'),
+                    t('logs.unrecognizedPayload'),
+                  );
+                  const actionMessage = AUDIT_ACTION_MESSAGES[log.action];
+                  const rawDetails = JSON.stringify({
+                    actor: log.actorSnapshot,
+                    shop: log.shopSnapshot,
+                    before: log.beforePayload,
+                    after: log.afterPayload,
+                  }, null, 2);
+
+                  return (
+                    <article key={log.id} className="logs-item" role="listitem">
+                      <div className="logs-row">
+                        <strong>{actionMessage ? t(actionMessage) : log.action}</strong>
+                        <span className="appointment-badge">{log.entityType}</span>
+                        <span className="hint">{new Date(log.createdAt).toLocaleString(locale, {
+                          year: 'numeric', month: '2-digit', day: '2-digit',
+                          hour: 'numeric', minute: '2-digit', hour12: true,
+                        })}</span>
+                      </div>
+                      <div className="logs-meta">
+                        <span>{t('logs.actor', { displayName: actorName, username: actorUsername })}</span>
+                        <span>{t('logs.role', {
+                          role: ROLE_MESSAGES[actorRole] ? t(ROLE_MESSAGES[actorRole]) : actorRole,
+                        })}</span>
+                        <span>{t('logs.shop', { shopName })}</span>
+                      </div>
+                      {presentation.legacyMissing || presentation.unrecognizedPayload ? (
+                        <p className="hint">{presentation.summary[0]}</p>
+                      ) : (
+                        <div className="logs-diff">
+                          {presentation.changes.map((change) => (
+                            <div key={change.field}>
+                              <span className="summary-label">{change.field}</span>{' '}
+                              {change.before ? `${change.before} → ` : ''}
+                              {change.after}
+                            </div>
+                          ))}
+                          {presentation.changes.length === 0
+                            ? <div>{t('logs.noChanges')}</div>
+                            : null}
+                        </div>
+                      )}
+                      <details className="audit-raw-details">
+                        <summary>{t('logs.rawDetails')}</summary>
+                        <pre>{rawDetails ?? '{}'}</pre>
+                      </details>
+                      <span className="hint">{t('logs.target', { entityType: log.entityType, entityId: log.entityId })}</span>
+                    </article>
+                  );
+                })()
               ))}
             </div>
           )}

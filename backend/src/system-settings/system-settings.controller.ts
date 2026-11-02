@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Patch, Req, UseGuards } from '@nestjs/common';
+import { Request } from 'express';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -18,7 +19,10 @@ export class SystemSettingsController {
 
   @Patch('calendar-window')
   @Roles(UserRole.ADMIN)
-  updateCalendarWindow(@Body() dto: UpdateCalendarWindowDto) {
-    return this.systemSettingsService.updateCalendarWindow(dto);
+  updateCalendarWindow(
+    @Body() dto: UpdateCalendarWindowDto,
+    @Req() req: Request & { user: { sub: string } },
+  ) {
+    return this.systemSettingsService.updateCalendarWindow(dto, req.user.sub);
   }
 }

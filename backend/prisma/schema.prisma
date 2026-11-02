@@ -12,9 +12,10 @@ datasource db {
 }
 
 enum UserRole {
-  ADMIN               @map("admin")
-  EMPLOYEE            @map("employee")
-  MULTI_SHOP_EMPLOYEE @map("multi_shop_employee")
+  ADMIN        @map("admin")
+  EMPLOYEE     @map("employee")
+  MANAGER      @map("manager")
+  SHOP_ACCOUNT @map("shop_account")
 }
 
 enum UserStatus {
@@ -60,6 +61,8 @@ model User {
   updatedAppointments Appointment[]  @relation("AppointmentUpdatedBy")
   auditLogs           AuditLog[]     @relation("ActorAuditLogs")
   roleAssignments     UserRoleAssignment[]
+  staffColorMaps      StaffColorMap[]
+  managerColor        ManagerColorMap?
 
   @@index([shopId])
   @@map("users")
@@ -67,14 +70,25 @@ model User {
 
 model StaffColorMap {
   shopId    String   @map("shop_id")
-  staffName String   @map("staff_name")
+  userId    String   @map("user_id")
   color     String
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
   shop      Shop     @relation(fields: [shopId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
 
-  @@id([shopId, staffName])
+  @@id([shopId, userId])
+  @@unique([shopId, color])
   @@map("staff_color_map")
+}
+
+model ManagerColorMap {
+  userId    String   @id @map("user_id")
+  color     String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("manager_color_map")
 }
 
 model Appointment {
@@ -118,6 +132,8 @@ model AuditLog {
   entityId     String   @map("entity_id")
   beforePayload Json?   @map("before_payload")
   afterPayload Json?    @map("after_payload")
+  actorSnapshot Json?   @map("actor_snapshot")
+  shopSnapshot  Json?   @map("shop_snapshot")
   createdAt    DateTime @default(now()) @map("created_at")
   shop         Shop     @relation(fields: [shopId], references: [id])
   actor        User     @relation("ActorAuditLogs", fields: [actorUserId], references: [id])
