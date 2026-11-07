@@ -113,6 +113,32 @@ export class StaffColorsService implements OnModuleInit {
     return color;
   }
 
+  // Same allocator/reservations as a new local employee. Include the target's
+  // old color, so reassignment never proposes that same color again.
+  async previewReassignment(tx: Prisma.TransactionClient, shopId: string) {
+    const managers = await tx.$queryRaw<Array<{ color: string }>>`
+      SELECT color FROM manager_color_map`;
+    const employees = await tx.$queryRaw<Array<{ color: string }>>`
+      SELECT color FROM staff_color_map WHERE shop_id = ${shopId}`;
+    return chooseColor(
+      [...managers, ...employees].map((row) => row.color),
+      DEFAULT_PENDING_EMPLOYEE_COLOR,
+    );
+  }
+
+  async saveReassignment(
+    tx: Prisma.TransactionClient,
+    shopId: string,
+    userId: string,
+    color: string,
+  ) {
+    // Never touches appointments: their historical color snapshots are fixed.
+    await tx.staffColorMap.update({
+      where: { shopId_userId: { shopId, userId } },
+      data: { color },
+    });
+  }
+
   private async find(
     tx: Prisma.TransactionClient,
     user: StaffIdentity,

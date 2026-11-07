@@ -6,16 +6,16 @@ import {
 } from './calendar-ui-logic';
 
 describe('getInitialCalendarViewForWidth', () => {
-  it('defaults to 3-day view when viewport width is not available', () => {
-    expect(getInitialCalendarViewForWidth(undefined)).toBe('timeGridThreeDay');
+  it('defaults to day view when viewport width is not available', () => {
+    expect(getInitialCalendarViewForWidth(undefined)).toBe('timeGridDay');
   });
 
-  it('uses 3-day view at or below mobile breakpoint', () => {
-    expect(getInitialCalendarViewForWidth(960)).toBe('timeGridThreeDay');
+  it('uses day view at or below mobile breakpoint', () => {
+    expect(getInitialCalendarViewForWidth(960)).toBe('timeGridDay');
   });
 
-  it('uses 3-day view above mobile breakpoint', () => {
-    expect(getInitialCalendarViewForWidth(1280)).toBe('timeGridThreeDay');
+  it('uses day view above mobile breakpoint', () => {
+    expect(getInitialCalendarViewForWidth(1280)).toBe('timeGridDay');
   });
 });
 

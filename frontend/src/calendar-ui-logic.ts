@@ -4,13 +4,7 @@ export type CalendarView = 'timeGridWeek' | 'timeGridThreeDay' | 'timeGridDay';
 
 export const MOBILE_CALENDAR_BREAKPOINT_PX = 960;
 
-export const getInitialCalendarViewForWidth = (viewportWidth?: number): CalendarView => {
-  if (viewportWidth === undefined) {
-    return 'timeGridThreeDay';
-  }
-
-  return viewportWidth <= MOBILE_CALENDAR_BREAKPOINT_PX ? 'timeGridThreeDay' : 'timeGridThreeDay';
-};
+export const getInitialCalendarViewForWidth = (_viewportWidth?: number): CalendarView => 'timeGridDay';
 
 export const getPrimaryCalendarControl = (isMobileCalendarLayout: boolean) => {
   return {

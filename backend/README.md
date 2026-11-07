@@ -27,6 +27,16 @@ NestJS + Prisma backend for the shop appointment calendar MVP.
 - Audit entries retain actor/shop snapshots and business before/after snapshots. Older rows keep nullable snapshots; the UI falls back to the legacy actor relation and explicitly marks records without parseable details rather than inventing history.
 - Audit staff differences compare employee IDs, with name labels and ID suffixes for duplicate names. Name-only legacy snapshots explicitly show missing IDs and do not infer identity-based membership changes.
 - Frontend default new appointment duration is 60 minutes.
+- Calendar opens in Day view on every page load. Manual Day/3-day selection remains in React state during the current page session (including navigation, resize and panel switches), not in browser storage.
+- Appointment start date is display-only. Today retains device-local date semantics; Choose date uses a button-only month calendar with no editable input or clear action. Main-calendar date navigation and slot-click draft autofill are unchanged.
+
+## Employee color reassignment
+
+- ADMIN only, for undeleted local `EMPLOYEE` accounts (including inactive employees); pending accounts and global managers cannot be recolored.
+- `GET /users/:id/color-preview` returns `{ currentColor, candidateColor }` without saving. The candidate uses the existing automatic palette/reservations, including the target's old color and global manager colors.
+- `PATCH /users/:id/color` accepts that exact preview pair. Global → shop advisory locks serialize allocation/reassignment. The server recomputes the candidate; a stale preview or arbitrary color returns 409 and must be previewed again.
+- Confirmation updates only the staff color map and writes `user.color.update` audit in the same transaction. Existing appointment color snapshots are untouched; subsequent new/reassigned appointments use the new identity color. No database migration is required.
+- Account management compares all local employees side by side and offers preview, confirm and cancel; preview/cancel do not persist anything.
 
 ## Pending / 暂定占位员工说明
 

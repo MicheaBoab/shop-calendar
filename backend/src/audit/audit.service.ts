@@ -32,6 +32,7 @@ type UserManagementAuditChange = {
   action:
     | 'user.create'
     | 'user.status.update'
+    | 'user.color.update'
     | 'user.password.update'
     | 'user.remove';
   entityId: string;

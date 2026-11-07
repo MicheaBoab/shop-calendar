@@ -23,6 +23,16 @@ const appointment = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("audit presentation", () => {
+  it.each(["en", "zh-CN"] as const)("shows employee color before/after in %s", (locale) => {
+    const user = { username: "anna", displayName: "Anna", role: "EMPLOYEE", status: "ACTIVE" };
+    const result = getAuditPresentation(
+      { ...user, color: "#60a5fa" }, { ...user, color: "#f87171" },
+      "user", locale, formatDate, missing, noChanges,
+    );
+    expect(result.changes).toEqual([{
+      field: locale === "en" ? "Color" : "颜色", before: "#60a5fa", after: "#f87171",
+    }]);
+  });
   it.each(["en", "zh-CN"] as const)(
     "shows global manager scope and home/execution shops in %s",
     (locale) => {

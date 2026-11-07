@@ -108,6 +108,7 @@ const userValues = (value: JsonRecord): JsonRecord => ({
   displayName: value.displayName,
   role: value.role,
   status: value.status,
+  color: value.color,
   deletedAt: value.deletedAt ? "removed" : "active",
 });
 
@@ -274,6 +275,7 @@ export function getAuditPresentation(
             displayName: "显示名称",
             role: "角色",
             status: "状态",
+            color: "颜色",
             deletedAt: "账户",
           }
         : {
@@ -281,6 +283,7 @@ export function getAuditPresentation(
             displayName: "Display name",
             role: "Role",
             status: "Status",
+            color: "Color",
             deletedAt: "Account",
           };
 

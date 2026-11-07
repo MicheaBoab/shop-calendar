@@ -51,6 +51,8 @@ describe('ADMIN global manager management HTTP (memory only)', () => {
     >()
     .mockResolvedValue(undefined);
   const update = jest.fn();
+  const colorSave = jest.fn();
+  const colorPreview = jest.fn();
   const scopedRead = jest.fn(() => {
     throw new Error('Management must use explicit base-client eligibility');
   });
@@ -89,6 +91,7 @@ describe('ADMIN global manager management HTTP (memory only)', () => {
   );
   const base = {
     user: { findFirst, findMany, update },
+    $queryRaw: jest.fn(() => Promise.resolve([])),
     $transaction: (callback: (tx: unknown) => Promise<unknown>) =>
       callback(base),
   };
@@ -120,7 +123,12 @@ describe('ADMIN global manager management HTTP (memory only)', () => {
         },
         {
           provide: StaffColorsService,
-          useValue: { get: () => Promise.resolve('#60a5fa') },
+          useValue: {
+            get: () => Promise.resolve('#60a5fa'),
+            lock: () => Promise.resolve(),
+            previewReassignment: colorPreview,
+            saveReassignment: colorSave,
+          },
         },
         {
           provide: AuditService,
@@ -152,6 +160,8 @@ describe('ADMIN global manager management HTTP (memory only)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    colorPreview.mockResolvedValue('#f87171');
+    colorSave.mockResolvedValue(undefined);
     rows = [
       row('admin-b', UserRole.ADMIN, 'shop-b'),
       row('employee-b', UserRole.EMPLOYEE, 'shop-b'),
@@ -197,11 +207,32 @@ describe('ADMIN global manager management HTTP (memory only)', () => {
     expect(scopedRead).not.toHaveBeenCalled();
   });
 
+  it('allows admin to preview then confirm only a local employee color and rejects stale/manual candidates', async () => {
+    const preview = await call('get', '/users/employee-b/color-preview').expect(200);
+    expect(preview.body as unknown).toEqual({ currentColor: '#60a5fa', candidateColor: '#f87171' });
+    expect(colorSave).not.toHaveBeenCalled();
+    await call('patch', '/users/employee-b/color').send(preview.body).expect(200);
+    expect(colorSave).toHaveBeenCalledWith(base, 'shop-b', 'employee-b', '#f87171');
+    expect(record).toHaveBeenCalledTimes(1);
+    colorSave.mockClear();
+    await call('patch', '/users/employee-b/color').send({ currentColor: '#60a5fa', candidateColor: '#000000' }).expect(409);
+    await call('patch', '/users/employee-b/color').send({ currentColor: '#60a5fa' }).expect(400);
+    expect(colorSave).not.toHaveBeenCalled();
+    for (const id of ['employee-a', 'manager-a', 'admin-b', 'shared-a', 'deleted-manager-a']) {
+      await call('get', `/users/${id}/color-preview`).expect(404);
+      await call('patch', `/users/${id}/color`).send(preview.body).expect(404);
+    }
+    expect(colorSave).not.toHaveBeenCalled();
+  });
+
   it.each(['employee-b', 'manager-a', 'shared-a'])(
     '%s cannot read management or mutate users (real JWT and RolesGuard)',
     async (actor) => {
       const before = structuredClone(rows);
       await call('get', '/users', actor).expect(403);
+      await call('get', '/users/employee-b/color-preview', actor).expect(403);
+      await call('patch', '/users/employee-b/color', actor)
+        .send({ currentColor: '#60a5fa', candidateColor: '#f87171' }).expect(403);
       await call('patch', '/users/manager-a/password', actor)
         .send({ newPassword: 'new-password' })
         .expect(403);
@@ -212,6 +243,7 @@ describe('ADMIN global manager management HTTP (memory only)', () => {
       expect(rows).toEqual(before);
       expect(update).not.toHaveBeenCalled();
       expect(record).not.toHaveBeenCalled();
+      expect(colorSave).not.toHaveBeenCalled();
     },
   );
 

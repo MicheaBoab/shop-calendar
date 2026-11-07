@@ -353,6 +353,12 @@ const setControlValue = async (
   });
 };
 
+const chooseAppointmentDate = async (container: HTMLElement, date: Date) => {
+  await clickButton(container, "Choose date");
+  const label = `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")}/${date.getFullYear()}`;
+  await clickElement(container.querySelector(`.appointment-date-grid button[aria-label="${label}"]`)!);
+};
+
 const makeFetchMock = (role: TestRole, options: TestFetchOptions = {}) => {
   const auth = {
     accessToken: "access-token",
@@ -458,6 +464,7 @@ const makeFetchMock = (role: TestRole, options: TestFetchOptions = {}) => {
     Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
 
   const shops = options.shops ?? [{ id: "shop-1", name: "Main St" }];
+  let reassignedColor: string | null = null;
 
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -467,10 +474,17 @@ const makeFetchMock = (role: TestRole, options: TestFetchOptions = {}) => {
       return ok(auth);
     }
 
+    if (url.endsWith("/emp-1/color-preview") && method === "GET") {
+      return ok({ currentColor: reassignedColor ?? "#60a5fa", candidateColor: "#f87171" });
+    }
+    if (url.endsWith("/emp-1/color") && method === "PATCH") {
+      reassignedColor = JSON.parse(String(init?.body)).candidateColor;
+      return ok({ id: "emp-1", color: reassignedColor });
+    }
     if (url.includes("/users") && method === "GET") {
       return ok(users.map((user, index) => ({
         ...user,
-        color: user.color ?? ['#60a5fa', '#4ade80', '#f472b6', '#facc15'][index % 4],
+        color: (user.id === "emp-1" ? reassignedColor : null) ?? user.color ?? ['#60a5fa', '#4ade80', '#f472b6', '#facc15'][index % 4],
       })));
     }
 
@@ -570,6 +584,185 @@ const cleanupRender = async (root: Root, container: HTMLElement) => {
 };
 
 describe("App interaction seams", () => {
+  // Success-path contracts complement the failure/recovery tests below.
+  it.each(["ADMIN", "MANAGER", "EMPLOYEE", "SHOP_ACCOUNT"] as const)(
+    "%s submits optional-price, partially assigned group bookings with the default 60 minutes",
+    async (role) => {
+      const { container, root, fetchMock } = await renderAndLogin(role, 1280);
+      try {
+        const future = new Date();
+        future.setDate(future.getDate() + 1);
+        await chooseAppointmentDate(container, future);
+        await setControlValue(container.querySelector("#appointment-start-time")!, "230");
+        await setControlValue(findControlInLabel(container, "Phone") as HTMLInputElement, "3125550101");
+        await setControlValue(container.querySelector(".party-size-control input")!, "3");
+        await openEmployeeDropdown(container);
+        await toggleCheckbox(findEmployeeCheckbox(container, "Anna")!);
+        await clickButton(container, "Create appointment");
+        const writes = fetchMock.mock.calls.filter(([url, init]) =>
+          String(url).endsWith("/appointments") && init?.method === "POST");
+        expect(writes).toHaveLength(1);
+        const payload = JSON.parse(String(writes[0][1]!.body));
+        expect(payload).toMatchObject({ employeeIds: ["emp-1"], partySize: 3, phone: "3125550101" });
+        expect(payload).not.toHaveProperty("price");
+        expect(new Date(payload.endAt).getTime() - new Date(payload.startAt).getTime()).toBe(60 * 60_000);
+        expect(findButtonByLabel(container, "Create appointment")).not.toBeNull();
+        expect((findControlInLabel(container, "Phone") as HTMLInputElement).value).not.toContain("312");
+      } finally { await cleanupRender(root, container); }
+    },
+  );
+
+  it.each(["ADMIN", "MANAGER", "EMPLOYEE", "SHOP_ACCOUNT"] as const)(
+    "%s cancels only after confirmation and returns the editor to create mode",
+    async (role) => {
+      const { container, root, fetchMock } = await renderAndLogin(role, 1280);
+      try {
+        await clickButton(container, "Mock event click");
+        const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+        await clickButton(container, "Cancel appointment");
+        const writes = () => fetchMock.mock.calls.filter(([url, init]) =>
+          String(url).endsWith("/appt-1/cancel") && init?.method === "POST");
+        expect(writes()).toHaveLength(0);
+        expect(findButtonByLabel(container, "Update appointment")).not.toBeNull();
+        confirm.mockReturnValue(true);
+        await clickButton(container, "Cancel appointment");
+        expect(writes()).toHaveLength(1);
+        expect(findButtonByLabel(container, "Create appointment")).not.toBeNull();
+      } finally { await cleanupRender(root, container); }
+    },
+  );
+
+  it.each(["ADMIN", "MANAGER"] as const)("%s hides appointments only after confirmation", async (role) => {
+    const { container, root, fetchMock } = await renderAndLogin(role, 1280);
+    try {
+      await clickButton(container, "Mock event click");
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      await clickButton(container, "Delete appointment");
+      const writes = () => fetchMock.mock.calls.filter(([url, init]) =>
+        String(url).endsWith("/appt-1") && init?.method === "DELETE");
+      expect(writes()).toHaveLength(0);
+      confirm.mockReturnValue(true);
+      await clickButton(container, "Delete appointment");
+      expect(writes()).toHaveLength(1);
+      expect(findButtonByLabel(container, "Create appointment")).not.toBeNull();
+    } finally { await cleanupRender(root, container); }
+  });
+
+  it.each(["Mock event drop", "Mock event resize"])(
+    "%s writes both instants, refreshes after success and reverts on conflict",
+    async (action) => {
+      const { container, root, fetchMock } = await renderAndLogin("EMPLOYEE", 1280);
+      try {
+        const revert = vi.fn();
+        (globalThis as any).__TEST_EVENT_REVERT__ = revert;
+        const readsBefore = fetchMock.mock.calls.filter(([url, init]) =>
+          String(url).includes("/appointments") && !init?.method).length;
+        await clickButton(container, action);
+        const writes = fetchMock.mock.calls.filter(([url, init]) =>
+          String(url).endsWith("/appt-1") && init?.method === "PATCH");
+        expect(writes).toHaveLength(1);
+        expect(JSON.parse(String(writes[0][1]!.body))).toMatchObject({
+          startAt: new Date(2026, 6, 30, action.includes("drop") ? 15 : 14).toISOString(),
+          endAt: new Date(2026, 6, 30, 16).toISOString(),
+          updatedById: "emp-logged-in",
+        });
+        expect(fetchMock.mock.calls.filter(([url, init]) =>
+          String(url).includes("/appointments") && !init?.method).length).toBeGreaterThan(readsBefore);
+        expect(revert).not.toHaveBeenCalled();
+        fetchMock.mockImplementationOnce(() => Promise.resolve(
+          new Response(JSON.stringify({ message: "Appointment overlap" }), { status: 409 })));
+        await clickButton(container, action);
+        expect(revert).toHaveBeenCalledTimes(1);
+        expect(container.querySelector("dialog[open]")?.textContent).toContain("overlaps another appointment");
+      } finally { delete (globalThis as any).__TEST_EVENT_REVERT__; await cleanupRender(root, container); }
+    },
+  );
+
+  it.each(["EMPLOYEE", "MANAGER", "SHOP_ACCOUNT"] as const)(
+    "admin creates %s with matching passwords and refreshes the roster",
+    async (role) => {
+      const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
+      try {
+        await clickButton(container, "Admin");
+        const form = container.querySelector<HTMLInputElement>('input[name="username"]')!.form!;
+        await setControlValue(form.querySelector('[name="username"]')!, "guide.staff");
+        await setControlValue(form.querySelector('[name="password"]')!, "fictional-test-only");
+        await setControlValue(form.querySelector('[name="confirmPassword"]')!, "different");
+        await setControlValue(form.querySelector('[name="role"]')!, role);
+        await clickButton(container, "Create user");
+        const writes = () => fetchMock.mock.calls.filter(([url, init]) =>
+          String(url).endsWith("/users") && init?.method === "POST");
+        expect(writes()).toHaveLength(0);
+        await clickButton(container, "Got it");
+        await setControlValue(form.querySelector('[name="confirmPassword"]')!, "fictional-test-only");
+        await clickButton(container, "Create user");
+        expect(writes()).toHaveLength(1);
+        expect(JSON.parse(String(writes()[0][1]!.body))).toMatchObject({
+          username: "guide.staff", displayName: "guide.staff", role,
+        });
+        expect((form.querySelector('[name="username"]') as HTMLInputElement).value).toBe("");
+      } finally { await cleanupRender(root, container); }
+    },
+  );
+
+  it.each([
+    ["ACTIVE", "Disable", "INACTIVE"],
+    ["INACTIVE", "Enable", "ACTIVE"],
+  ])("admin changes %s account status and confirms removal of the intended user", async (status, action, nextStatus) => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280, {
+      users: [{ id: "emp-1", username: "anna", displayName: "Anna", role: "EMPLOYEE", status }],
+    });
+    try {
+      await clickButton(container, "Admin");
+      const anna = [...container.querySelectorAll<HTMLElement>(".user-item")]
+        .find(row => row.textContent?.includes("Anna"))!;
+      await clickButton(anna, action);
+      expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/emp-1/status")
+        && init?.method === "PATCH" && JSON.parse(String(init.body)).status === nextStatus)).toBe(true);
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      await clickButton(anna, "Remove");
+      expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/emp-1") && init?.method === "DELETE")).toBe(false);
+      confirm.mockReturnValue(true);
+      await clickButton(anna, "Remove");
+      expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/emp-1") && init?.method === "DELETE")).toHaveLength(1);
+    } finally { await cleanupRender(root, container); }
+  });
+
+  it.each(["emp-1", "admin-1"])("admin resets %s password; only self-reset clears the current session", async (id) => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
+    try {
+      await clickButton(container, "Admin");
+      const newPassword = container.querySelector<HTMLInputElement>('input[name="newPassword"]')!;
+      const form = newPassword.form!;
+      await setControlValue(form.querySelector('[name="targetUserId"]')!, id);
+      await setControlValue(newPassword, "fictional-reset-only");
+      await setControlValue(form.querySelector('[name="confirmPassword"]')!, "fictional-reset-only");
+      await clickButton(container, "Reset password");
+      const writes = fetchMock.mock.calls.filter(([url, init]) =>
+        String(url).endsWith(`/users/${id}/password`) && init?.method === "PATCH");
+      expect(writes).toHaveLength(1);
+      expect(JSON.parse(String(writes[0][1]!.body))).toEqual({ newPassword: "fictional-reset-only" });
+      if (id === "admin-1") {
+        expect(localStorage.getItem("shop-calendar-auth")).toBeNull();
+        expect(findButtonByLabel(container, "Sign in")).not.toBeNull();
+      } else {
+        expect(localStorage.getItem("shop-calendar-auth")).not.toBeNull();
+        expect(newPassword.value).toBe("");
+      }
+    } finally { await cleanupRender(root, container); }
+  });
+
+  it("signs out locally, removes saved authentication and closes the live stream", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
+    try {
+      expect(localStorage.getItem("shop-calendar-auth")).not.toBeNull();
+      await clickButton(container, "Sign out");
+      expect(localStorage.getItem("shop-calendar-auth")).toBeNull();
+      expect(findButtonByLabel(container, "Sign in")).not.toBeNull();
+      expect(MockEventSource.instances.every(stream => stream.closed)).toBe(true);
+    } finally { await cleanupRender(root, container); }
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     calendarPropsSpy.mockClear();
@@ -641,37 +834,41 @@ describe("App interaction seams", () => {
   it("keeps only Today and Choose date, uses local dates and never overwrites time/customer or adds a past minimum", async () => {
     const { container, root } = await renderAndLogin("ADMIN", 390);
     try {
-      const date = container.querySelector("#appointment-start-date") as HTMLInputElement;
+      const date = container.querySelector("#appointment-start-date") as HTMLOutputElement;
       const time = container.querySelector("#appointment-start-time") as HTMLInputElement;
       const customer = findControlInLabel(container, "Customer name") as HTMLInputElement;
       const actions = container.querySelector(".quick-date-shortcuts")!;
       expect([...actions.querySelectorAll("button")].map(el => el.textContent)).toEqual(["Today", "Choose date"]);
       await setControlValue(time, "230");
       await setControlValue(customer, "Keep this customer");
-      await setControlValue(date, "invalid");
+      expect(date.tagName).toBe("OUTPUT");
+      await act(async () => {
+        date.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+        date.dispatchEvent(new Event("paste", { bubbles: true }));
+        date.dispatchEvent(new Event("input", { bubbles: true }));
+      });
       await clickButton(container, "Today");
       const today = new Date();
       expect(date.value).toBe(`${String(today.getMonth() + 1).padStart(2, "0")}/${String(today.getDate()).padStart(2, "0")}/${today.getFullYear()}`);
       await clickButton(container, "Choose date");
-      const native = container.querySelector('input[type="date"]') as HTMLInputElement;
-      expect(native).not.toBeNull();
-      expect(native.hasAttribute("min")).toBe(false);
-      expect(native.tabIndex).toBe(0);
-      expect(document.activeElement).toBe(native);
-      expect(actions.querySelector('[role="status"]')?.textContent).toContain("could not open automatically");
-      await setControlValue(native, "2028-01-02");
-      expect(date.value).toBe("01/02/2028");
+      const panel = container.querySelector(".appointment-date-panel")!;
+      expect(panel.querySelector("input")).toBeNull();
+      expect(document.activeElement?.getAttribute("aria-label")).toBe(date.value);
+      const selected = panel.querySelector<HTMLButtonElement>('.appointment-date-grid button:not([aria-pressed="true"])')!;
+      const chosenDate = selected.getAttribute("aria-label");
+      await clickElement(selected);
+      expect(date.value).toBe(chosenDate);
       expect(container.querySelector('input[type="date"]')).toBeNull();
       expect(document.activeElement?.textContent).toBe("Choose date");
       expect(time.value).toBe("230");
       expect(customer.value).toBe("Keep this customer");
-      await setControlValue(date, "12/31/2027");
       await clickButton(container, "Choose date");
-      expect((container.querySelector('input[type="date"]') as HTMLInputElement).value).toBe("2027-12-31");
-      await setControlValue(container.querySelector('input[type="date"]') as HTMLInputElement, "2020-02-29");
-      expect(date.value).toBe("02/29/2020");
-      await setControlValue(date, "");
-      expect(date.value).toBe("");
+      expect(document.activeElement?.getAttribute("aria-label")).toBe(chosenDate);
+      await clickElement(container.querySelector('.appointment-date-heading button[aria-label="Prev"]')!);
+      const pastDay = container.querySelector<HTMLButtonElement>(".appointment-date-grid button")!;
+      const pastDate = pastDay.getAttribute("aria-label");
+      await clickElement(pastDay);
+      expect(date.value).toBe(pastDate);
       expect(time.value).toBe("230");
       expect(customer.value).toBe("Keep this customer");
     } finally { await cleanupRender(root, container); }
@@ -686,17 +883,19 @@ describe("App interaction seams", () => {
       expect(container.querySelector('button[aria-label="结束时间预览说明"]')).not.toBeNull();
       expect(findButtonByLabel(container, "今天")).not.toBeNull();
       await clickButton(container, "选择日期");
-      expect(container.querySelector('.quick-date-shortcuts [role="status"]')?.textContent).toContain("无法自动打开日历");
+      expect(container.querySelector('.appointment-date-panel[aria-label="选择日期"]')).not.toBeNull();
+      expect(container.querySelector('.quick-date-shortcuts input')).toBeNull();
     } finally { await cleanupRender(root, container); }
   });
 
   it("navigates via the displayed date without changing drafts/filter/view, synchronizes navigation and preserves the anchor after slot clicks/remount", async () => {
     const { container, root } = await renderAndLogin("ADMIN", 1280);
     try {
-      const date = container.querySelector("#appointment-start-date") as HTMLInputElement;
+      const date = container.querySelector("#appointment-start-date") as HTMLOutputElement;
       const time = container.querySelector("#appointment-start-time") as HTMLInputElement;
       const customer = findControlInLabel(container, "Customer name") as HTMLInputElement;
-      await setControlValue(date, "07/30/2026");
+      await clickButton(container, "Mock date click");
+      await clickButton(container, "3-day");
       await setControlValue(time, "230");
       await setControlValue(customer, "Untouched draft");
       const filter = [...container.querySelectorAll<HTMLButtonElement>(".legend-filter-button")][1];
@@ -793,14 +992,73 @@ describe("App interaction seams", () => {
       expect(props.editable).toBe(true);
     };
     try {
-      assertCalendarOptions("timeGridThreeDay");
-      await clickButton(container, "Day");
       assertCalendarOptions("timeGridDay");
       await clickButton(container, "3-day");
       assertCalendarOptions("timeGridThreeDay");
     } finally {
       await cleanupRender(root, container);
     }
+  });
+
+  it("keeps manual view selection through navigation, resize and panel switches, but resets on a new page mount", async () => {
+    const { container, root } = await renderAndLogin("ADMIN", 1280);
+    const view = () => calendarPropsSpy.mock.calls[calendarPropsSpy.mock.calls.length - 1][0].initialView;
+    try {
+      expect(view()).toBe("timeGridDay");
+      await clickButton(container, "3-day");
+      await act(async () => { setViewportWidth(390); window.dispatchEvent(new Event("resize")); });
+      expect(view()).toBe("timeGridThreeDay");
+      await clickElement(container.querySelector(".date-strip button")!);
+      expect(view()).toBe("timeGridThreeDay");
+      await clickButton(container, "Admin");
+      await clickButton(container, "Calendar");
+      expect(view()).toBe("timeGridThreeDay");
+    } finally { await cleanupRender(root, container); }
+    localStorage.removeItem("shop-calendar-auth");
+    const reopened = await renderAndLogin("ADMIN", 390);
+    try { expect(view()).toBe("timeGridDay"); }
+    finally { await cleanupRender(reopened.root, reopened.container); }
+  });
+
+  it("admin compares all local employees, previews/cancels without writes, and confirms without changing appointment snapshots", async () => {
+    const today = new Date();
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280, {
+      users: [
+        { id: "emp-1", username: "anna", displayName: "Anna", role: "EMPLOYEE", status: "ACTIVE", color: "#60a5fa" },
+        { id: "emp-2", username: "ben", displayName: "Ben", role: "EMPLOYEE", status: "INACTIVE", color: "#4ade80" },
+        { id: "manager-1", username: "manager", displayName: "Manager", role: "MANAGER", status: "ACTIVE", color: "#facc15" },
+      ],
+      appointments: [{
+        id: "appt-1", employeeId: "emp-1", employeeColor: "#60a5fa",
+        startAt: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 14).toISOString(),
+        endAt: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 15).toISOString(),
+        phone: "3125550101", price: "80.00", status: "ACTIVE",
+      }],
+    });
+    const writes = () => fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/color") && init?.method === "PATCH");
+    try {
+      await clickButton(container, "Admin");
+      const colors = container.querySelector(".staff-color-list")!;
+      expect(colors.querySelectorAll(".staff-color-card")).toHaveLength(2);
+      expect(colors.textContent).toContain("#60a5fa");
+      expect(colors.textContent).toContain("#4ade80");
+      expect(colors.textContent).not.toContain("Manager");
+      await clickButton(container, "Preview reassignment");
+      expect(container.querySelector(".staff-color-preview")?.textContent).toContain("#f87171");
+      expect(writes()).toHaveLength(0);
+      await clickButton(container, "Cancel");
+      expect(container.querySelector(".staff-color-preview")).toBeNull();
+      expect(writes()).toHaveLength(0);
+      await clickButton(container, "Preview reassignment");
+      await clickButton(container, "Confirm color");
+      expect(writes()).toHaveLength(1);
+      expect(JSON.parse(String(writes()[0][1]!.body))).toEqual({ currentColor: "#60a5fa", candidateColor: "#f87171" });
+      expect(colors.textContent).toContain("Current: #f87171");
+      await clickButton(container, "Calendar");
+      const event = calendarPropsSpy.mock.calls[calendarPropsSpy.mock.calls.length - 1][0].events.find((entry: any) => entry.id === "appt-1");
+      expect(event.backgroundColor).toContain("#60a5fa");
+      expect(event.backgroundColor).not.toContain("#f87171");
+    } finally { await cleanupRender(root, container); }
   });
 
   it("filters the calendar and today's agenda by one employee, keeps repeated selection, and resets to all", async () => {
@@ -1347,17 +1605,19 @@ describe("App interaction seams", () => {
 
     const primaryControl = findButtonByLabel(container, "3-day");
     expect(primaryControl).not.toBeNull();
-    expect(primaryControl?.className).toContain("active");
+    expect(primaryControl?.className).not.toContain("active");
+    expect(findButtonByLabel(container, "Day")?.className).toContain("active");
 
     await cleanupRender(root, container);
   });
 
-  it("defaults to 3-day as the primary active view on desktop width", async () => {
+  it("defaults to Day on desktop width and leaves 3-day available for manual selection", async () => {
     const { container, root } = await renderAndLogin("ADMIN", 1280);
 
     const threeDayControl = findButtonByLabel(container, "3-day");
     expect(threeDayControl).not.toBeNull();
-    expect(threeDayControl?.className).toContain("active");
+    expect(threeDayControl?.className).not.toContain("active");
+    expect(findButtonByLabel(container, "Day")?.className).toContain("active");
 
     await cleanupRender(root, container);
   });
@@ -1376,8 +1636,8 @@ describe("App interaction seams", () => {
     );
 
     const startDateInput = container.querySelector(
-      'input[aria-label="Start date in MM/DD/YYYY format"]',
-    ) as HTMLInputElement | null;
+      'output[aria-label="Start date in MM/DD/YYYY format"]',
+    ) as HTMLOutputElement | null;
     const startTimeInput = findControlInLabel(
       container,
       "Start time",
@@ -1606,18 +1866,15 @@ describe("App interaction seams", () => {
       "input",
     ) as HTMLInputElement | null;
     const startDateInput = container.querySelector(
-      'input[aria-label="Start date in MM/DD/YYYY format"]',
-    ) as HTMLInputElement | null;
+      'output[aria-label="Start date in MM/DD/YYYY format"]',
+    ) as HTMLOutputElement | null;
     expect(priceInput).not.toBeNull();
     expect(startDateInput).not.toBeNull();
     expect(priceInput?.value).toBe("80");
     await setControlValue(priceInput as HTMLInputElement, "95");
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
-    await setControlValue(
-      startDateInput as HTMLInputElement,
-      `${String(tomorrow.getMonth() + 1).padStart(2, "0")}/${String(tomorrow.getDate()).padStart(2, "0")}/${tomorrow.getFullYear()}`,
-    );
+    await chooseAppointmentDate(container, tomorrow);
 
     await openEmployeeDropdown(container);
     const employeeUserCheckbox = findEmployeeCheckbox(
@@ -1947,7 +2204,7 @@ describe("App interaction seams", () => {
   it("blocks new appointment submission when business hours could not be loaded", async () => {
     const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280, { calendarWindowUnavailable: true });
     const calendarProps = calendarPropsSpy.mock.calls.slice(-1)[0]?.[0];
-    const startDateInput = container.querySelector('input[aria-label="Start date in MM/DD/YYYY format"]') as HTMLInputElement;
+    const startDateInput = container.querySelector('#appointment-start-date') as HTMLOutputElement;
     const startTimeInput = findControlInLabel(container, "Start time") as HTMLInputElement;
     const priorDraft = [startDateInput.value, startTimeInput.value];
     await act(async () => calendarProps.dateClick({ date: new Date(2026, 6, 30, 14, 30) }));
@@ -2013,7 +2270,7 @@ describe("App interaction seams", () => {
     const calendarProps = calendarPropsSpy.mock.calls.slice(-1)[0]?.[0];
     expect(calendarProps.slotMinTime).toBe("08:00:00");
     expect(calendarProps.slotMaxTime).toBe(displayEnd);
-    const startDateInput = container.querySelector('input[aria-label="Start date in MM/DD/YYYY format"]') as HTMLInputElement;
+    const startDateInput = container.querySelector('#appointment-start-date') as HTMLOutputElement;
     const startTimeInput = findControlInLabel(container, "Start time") as HTMLInputElement;
     const priorDraft = [startDateInput.value, startTimeInput.value];
 
@@ -2279,7 +2536,7 @@ describe("App interaction seams", () => {
     await cleanupRender(root, container);
   });
 
-  it("disables update but keeps admin hard delete enabled for a cancelled appointment", async () => {
+  it("disables update but keeps admin soft-delete enabled for a cancelled appointment", async () => {
     const { container, root } = await renderAndLogin("ADMIN", 1280);
 
     setMockEventClickId("appt-2");
@@ -2301,6 +2558,7 @@ describe("App interaction seams", () => {
 
   it("autofills start date and time when switching mobile 3-day to Day before slot click", async () => {
     const { container, root } = await renderAndLogin("ADMIN", 800);
+    await clickButton(container, "3-day");
 
     const threeDayButton = findButtonByLabel(container, "3-day");
     expect(threeDayButton).not.toBeNull();
@@ -2313,8 +2571,8 @@ describe("App interaction seams", () => {
     await clickButton(container, "Mock date click");
 
     const startDateInput = container.querySelector(
-      'input[aria-label="Start date in MM/DD/YYYY format"]',
-    ) as HTMLInputElement | null;
+      'output[aria-label="Start date in MM/DD/YYYY format"]',
+    ) as HTMLOutputElement | null;
     const startTimeInput = findControlInLabel(
       container,
       "Start time",
@@ -2330,6 +2588,7 @@ describe("App interaction seams", () => {
 
   it("keeps mobile 3-day primary control available and active after Prev and Next navigation", async () => {
     const { container, root } = await renderAndLogin("ADMIN", 800);
+    await clickButton(container, "3-day");
 
     const initialPrimaryControl = findButtonByLabel(container, "3-day");
     expect(initialPrimaryControl).not.toBeNull();
@@ -2490,8 +2749,8 @@ describe("App interaction seams", () => {
     await clickButton(container, "Mock date click");
 
     const startDateInput = container.querySelector(
-      'input[aria-label="Start date in MM/DD/YYYY format"]',
-    ) as HTMLInputElement | null;
+      'output[aria-label="Start date in MM/DD/YYYY format"]',
+    ) as HTMLOutputElement | null;
     const startTimeInput = findControlInLabel(
       container,
       "Start time",

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
@@ -23,6 +24,7 @@ import { isPendingAssignmentEmployeeUsername } from '../common/pending-assignmen
 import { canCreateManagedUserRole } from '../auth/role-capabilities';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { StaffColorsService } from '../staff-colors/staff-colors.service';
+import { ReassignUserColorDto } from './dto/reassign-user-color.dto';
 
 @Injectable()
 export class UsersService {
@@ -146,6 +148,55 @@ export class UsersService {
     });
 
     return created;
+  }
+
+  async previewUserColor(id: string) {
+    const shopId = requireCurrentShopId();
+    return this.basePrismaService.$transaction(async (tx) => {
+      await this.staffColors.lock(tx, shopId);
+      const user = await this.requireColorEmployee(tx, id, shopId);
+      return {
+        currentColor: await this.staffColors.get(user, shopId, tx),
+        candidateColor: await this.staffColors.previewReassignment(tx, shopId),
+      };
+    });
+  }
+
+  async reassignUserColor(id: string, dto: ReassignUserColorDto, actorUserId: string) {
+    const shopId = requireCurrentShopId();
+    const auditContext = await this.auditService.createAuditContext(actorUserId);
+    return this.basePrismaService.$transaction(async (tx) => {
+      await this.staffColors.lock(tx, shopId);
+      const user = await this.requireColorEmployee(tx, id, shopId);
+      const currentColor = await this.staffColors.get(user, shopId, tx);
+      const candidateColor = await this.staffColors.previewReassignment(tx, shopId);
+      if (dto.currentColor !== currentColor || dto.candidateColor !== candidateColor) {
+        throw new ConflictException('Staff colors changed. Preview again before confirming.');
+      }
+      await this.staffColors.saveReassignment(tx, shopId, id, candidateColor);
+      await this.auditService.recordUserManagementChange({
+        actorUserId,
+        action: 'user.color.update',
+        entityId: id,
+        beforePayload: this.toAuditPayload({ ...user, color: currentColor }),
+        afterPayload: this.toAuditPayload({ ...user, color: candidateColor }),
+      }, auditContext, tx);
+      return { id, color: candidateColor };
+    });
+  }
+
+  private async requireColorEmployee(tx: Prisma.TransactionClient, id: string, shopId: string) {
+    // Removal updates this row. Hold it through confirmation so an account
+    // cannot become deleted between the eligibility check and the color write.
+    await tx.$queryRaw`
+      SELECT id FROM users WHERE id = ${id} AND shop_id = ${shopId} FOR SHARE`;
+    const user = await tx.user.findFirst({
+      where: { id, shopId, role: UserRole.EMPLOYEE, deletedAt: null },
+    });
+    if (!user || isPendingAssignmentEmployeeUsername(user.username)) {
+      throw new NotFoundException('Local employee not found or color cannot be reassigned.');
+    }
+    return user;
   }
 
   async updateUserStatus(

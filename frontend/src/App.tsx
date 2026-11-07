@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { CSSProperties } from 'react';
 import { OperationErrorDialog } from './OperationErrorDialog';
 import { NativeDateChooser } from './NativeDateChooser';
+import { AppointmentDateChooser } from './AppointmentDateChooser';
 import { getAuditPresentation } from './audit-presentation';
 import { assertPersistedStaffColors } from './staff-colors';
 import { CalendarEventBox, CalendarFrame, formatTimeOnly } from './calendar-presentation';
@@ -185,6 +186,7 @@ const AUDIT_ACTION_MESSAGES: Record<string, MessageKey> = {
   'appointment.delete': 'logs.action.appointment.delete',
   'user.create': 'logs.action.user.create',
   'user.status.update': 'logs.action.user.status.update',
+  'user.color.update': 'logs.action.user.color.update',
   'user.password.update': 'logs.action.user.password.update',
   'user.remove': 'logs.action.user.remove',
   'settings.calendar-window.update': 'logs.action.settings.calendar-window.update',
@@ -710,6 +712,9 @@ function App() {
   const [isAuthBootstrapping, setIsAuthBootstrapping] = useState(() => initialStoredAuthRef.current !== null);
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [adminUsers, setAdminUsers] = useState<UserRecord[]>([]);
+  const [colorPreview, setColorPreview] = useState<{
+    userId: string; currentColor: string; candidateColor: string;
+  } | null>(null);
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
   const [form, setForm] = useState<AppointmentFormState>(() => createInitialForm());
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -886,16 +891,6 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    setCalendarView((current) => {
-      if (current === 'timeGridDay') {
-        return current;
-      }
-
-      return isMobileCalendarLayout ? 'timeGridThreeDay' : 'timeGridThreeDay';
-    });
-  }, [isMobileCalendarLayout]);
-
   const employeeOptions = useMemo(
     () => users.filter((user) => isActiveStatus(user.status) && isEmployeeLikeRole(user.role)),
     [users],
@@ -1024,6 +1019,7 @@ function App() {
     if (userChanged || previousAuth?.activeShopId !== nextAuth?.activeShopId) {
       shopContextVersionRef.current += 1;
       setReadErrors({});
+      setColorPreview(null);
       originalEditingStartAtRef.current = null;
       appointmentStartTimeEditedRef.current = false;
       clearStartTimeError();
@@ -2010,6 +2006,43 @@ function App() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handlePreviewUserColor = async (userId: string) => {
+    if (!auth || !isAdminRole(auth.user.role)) return;
+    setColorPreview(null);
+    setLoading(true);
+    try {
+      const data = await fetchJson(`/users/${userId}/color-preview`);
+      if (!isSameShopContext(auth)) return;
+      if (!data || !/^#[0-9a-f]{6}$/.test(data.currentColor) || !/^#[0-9a-f]{6}$/.test(data.candidateColor)) {
+        throw new Error(t('admin.colorFailed'));
+      }
+      setColorPreview({ userId, currentColor: data.currentColor, candidateColor: data.candidateColor });
+    } catch (error) {
+      if (isSameShopContext(auth)) showOperationError(getDisplayError(error, t('admin.colorFailed')));
+    } finally { setLoading(false); }
+  };
+
+  const handleConfirmUserColor = async () => {
+    if (!auth || !isAdminRole(auth.user.role) || !colorPreview) return;
+    setLoading(true);
+    try {
+      await fetchJson(`/users/${colorPreview.userId}/color`, {
+        method: 'PATCH',
+        body: JSON.stringify({ currentColor: colorPreview.currentColor, candidateColor: colorPreview.candidateColor }),
+      });
+      if (!isSameShopContext(auth)) return;
+      setColorPreview(null);
+      setNotice(t('admin.colorSaved'), 'success');
+      try { await loadUsers(); }
+      catch (error) { if (isSameShopContext(auth)) reportMutationRefreshFailure('users', error); }
+    } catch (error) {
+      if (isSameShopContext(auth)) {
+        setColorPreview(null);
+        showOperationError(getDisplayError(error, t('admin.colorFailed')));
+      }
+    } finally { setLoading(false); }
   };
 
   const handleAdminResetPassword = async (event: React.FormEvent) => {
@@ -3097,24 +3130,17 @@ function App() {
                         {startDateWeekdayLabel ? startDateWeekdayLabel : t('editor.invalidDate')}
                       </span>
                     </span>
-                    <input
+                    <output
                       id="appointment-start-date"
-                      type="text"
-                      inputMode="numeric"
-                      placeholder={t('editor.startDatePlaceholder')}
                       aria-label={t('editor.startDateAria')}
-                      pattern="\d{2}/\d{2}/\d{4}"
+                      aria-describedby="start-date-help"
+                      className="appointment-date-value"
                       title={t('editor.startDateTitle')}
-                      value={form.startDate}
-                      onChange={(e) => setForm({ ...form, startDate: e.target.value })}
-                    />
+                    >{form.startDate}</output>
                     <div className="quick-date-shortcuts" role="group" aria-label={t('editor.quickDateAria')}>
                       <button type="button" onClick={applyToday}>{t('shortcut.today')}</button>
-                      <NativeDateChooser value={form.startDate}
-                        onChange={(startDate) => setForm((current) => ({ ...current, startDate }))}
-                        onError={(error) => showOperationError(t('editor.datePickerFailed', {
-                          error: error instanceof Error ? error.message : String(error),
-                        }))} />
+                      <AppointmentDateChooser value={form.startDate}
+                        onChange={(startDate) => setForm((current) => ({ ...current, startDate }))} />
                     </div>
                   </div>
                   <div className="start-time-field">
@@ -3712,6 +3738,32 @@ function App() {
             </form>
           </div>
 
+          <section aria-label={t('admin.staffColors')}>
+            <h3>{t('admin.staffColors')}</h3>
+            <p className="hint">{t('admin.colorHint')}</p>
+            <div className="staff-color-list">
+              {manageableUsers.filter((user) => user.role.toUpperCase() === 'EMPLOYEE').map((user) => (
+                <div className="staff-color-card" key={user.id}>
+                  <strong>{user.displayName}</strong>
+                  <span className="staff-color-sample">
+                    <span className="staff-color-swatch" style={{ backgroundColor: user.color }} aria-hidden="true" />
+                    {t('admin.currentColor')}: {user.color}
+                  </span>
+                  <button type="button" disabled={loading} onClick={() => void handlePreviewUserColor(user.id)}>
+                    {t('admin.previewColor')}
+                  </button>
+                  {colorPreview?.userId === user.id ? <div className="staff-color-preview">
+                    <span className="staff-color-sample">
+                      <span className="staff-color-swatch" style={{ backgroundColor: colorPreview.candidateColor }} aria-hidden="true" />
+                      {t('admin.candidateColor')}: {colorPreview.candidateColor}
+                    </span>
+                    <button type="button" disabled={loading} onClick={() => void handleConfirmUserColor()}>{t('admin.confirmColor')}</button>
+                    <button type="button" disabled={loading} onClick={() => setColorPreview(null)}>{t('actions.cancel')}</button>
+                  </div> : null}
+                </div>
+              ))}
+            </div>
+          </section>
           {[false, true].map((managerGroup) => (
             <div key={String(managerGroup)} className="user-list" role={managerGroup ? 'group' : undefined} aria-label={managerGroup ? t('admin.globalManagers') : undefined}>
               {managerGroup ? <>

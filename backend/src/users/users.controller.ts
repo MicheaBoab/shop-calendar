@@ -18,6 +18,7 @@ import { UpdateUserPasswordDto } from './dto/update-user-password.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { ReassignUserColorDto } from './dto/reassign-user-color.dto';
 
 type AuthenticatedRequest = Request & {
   user: {
@@ -47,6 +48,22 @@ export class UsersController {
   @Roles(UserRole.ADMIN)
   createUser(@Body() dto: CreateUserDto, @Req() req: AuthenticatedRequest) {
     return this.usersService.createUser(dto, req.user.sub);
+  }
+
+  @Get(':id/color-preview')
+  @Roles(UserRole.ADMIN)
+  previewUserColor(@Param('id') id: string) {
+    return this.usersService.previewUserColor(id);
+  }
+
+  @Patch(':id/color')
+  @Roles(UserRole.ADMIN)
+  reassignUserColor(
+    @Param('id') id: string,
+    @Body() dto: ReassignUserColorDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.usersService.reassignUserColor(id, dto, req.user.sub);
   }
 
   @Patch(':id/status')
