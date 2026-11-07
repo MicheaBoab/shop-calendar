@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { UserRole } from '@prisma/client';
+import { AppointmentStatus, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -9,7 +9,10 @@ import { PrismaService } from '../src/common/prisma/prisma.service';
 import { AuthService } from '../src/auth/auth.service';
 import { StaffColorsService } from '../src/staff-colors/staff-colors.service';
 import { chooseColor, colorFamily } from '../src/staff-colors/color-palette';
-import { DEFAULT_PENDING_EMPLOYEE_COLOR } from '../src/common/pending-assignment';
+import {
+  DEFAULT_PENDING_EMPLOYEE_COLOR,
+  getPendingAssignmentEmployeeUsernameForShop,
+} from '../src/common/pending-assignment';
 
 const target = process.env.DATABASE_URL
   ? new URL(process.env.DATABASE_URL)
@@ -304,6 +307,122 @@ const enabled =
         },
       });
       expect(edited.employeeColor).toBe(originalColor);
+    });
+
+    it('reassignment updates only the target employee appointment color snapshots and preserves history', async () => {
+      const otherEmployee = await create(UserRole.EMPLOYEE);
+      const pending = await prisma.user.findFirstOrThrow({
+        where: {
+          shopId: shops[0],
+          username: getPendingAssignmentEmployeeUsernameForShop(shops[0]),
+        },
+      });
+      const deletedAt = new Date();
+      const start = new Date();
+      start.setUTCDate(start.getUTCDate() + 30);
+      start.setUTCHours(16, 0, 0, 0);
+      const fixtures = [
+        {
+          employeeId: originalEmployee,
+          status: AppointmentStatus.SCHEDULED,
+          startAt: new Date(start.getTime() - 60 * 86_400_000),
+          deletedAt: null,
+        },
+        {
+          employeeId: originalEmployee,
+          status: AppointmentStatus.COMPLETED,
+          startAt: new Date(start.getTime() - 30 * 86_400_000),
+          deletedAt: null,
+        },
+        {
+          employeeId: originalEmployee,
+          status: AppointmentStatus.CANCELLED,
+          startAt: new Date(start.getTime() - 10 * 86_400_000),
+          deletedAt: null,
+        },
+        {
+          employeeId: originalEmployee,
+          status: AppointmentStatus.SCHEDULED,
+          startAt: start,
+          deletedAt,
+        },
+        {
+          employeeId: otherEmployee.id,
+          status: AppointmentStatus.SCHEDULED,
+          startAt: new Date(start.getTime() + 60 * 60_000),
+          deletedAt: null,
+        },
+        {
+          employeeId: pending.id,
+          status: AppointmentStatus.SCHEDULED,
+          startAt: new Date(start.getTime() + 120 * 60_000),
+          deletedAt: null,
+        },
+      ];
+      const created = await Promise.all(
+        fixtures.map((fixture, index) =>
+          prisma.appointment.create({
+            data: {
+              shopId: shops[0],
+              employeeId: fixture.employeeId,
+              employeeDisplayName: `Snapshot fixture ${index}`,
+              employeeColor:
+                fixture.employeeId === pending.id
+                  ? DEFAULT_PENDING_EMPLOYEE_COLOR
+                  : fixture.employeeId === otherEmployee.id
+                    ? otherEmployee.color
+                    : originalColor,
+              startAt: fixture.startAt,
+              endAt: new Date(fixture.startAt.getTime() + 30 * 60_000),
+              phone: `312555${String(1000 + index).slice(-4)}`,
+              price: 7000 + index,
+              status: fixture.status,
+              deletedAt: fixture.deletedAt,
+              createdById: adminId,
+              updatedById: adminId,
+              groupId: randomUUID(),
+            },
+          }),
+        ),
+      );
+      const previousAudits = await prisma.auditLog.findMany();
+      const previousAppointments = await prisma.appointment.findMany({
+        where: { id: { in: created.map((appointment) => appointment.id) } },
+      });
+
+      const preview = await api()
+        .get(`/users/${originalEmployee}/color-preview`)
+        .auth(tokens[0], { type: 'bearer' })
+        .expect(200);
+      const response = await api()
+        .patch(`/users/${originalEmployee}/color`)
+        .auth(tokens[0], { type: 'bearer' })
+        .send(preview.body)
+        .expect(200);
+      const newColor = (response.body as { color: string }).color;
+      expect(newColor).not.toBe(originalColor);
+
+      const updatedAppointments = await prisma.appointment.findMany({
+        where: { id: { in: created.map((appointment) => appointment.id) } },
+      });
+      for (const before of previousAppointments) {
+        const after = updatedAppointments.find(
+          (appointment) => appointment.id === before.id,
+        )!;
+        if (before.employeeId === originalEmployee) {
+          expect(after.employeeColor).toBe(newColor);
+          expect({ ...after, employeeColor: before.employeeColor }).toEqual(
+            before,
+          );
+        } else {
+          expect(after).toEqual(before);
+        }
+      }
+      for (const audit of previousAudits) {
+        expect(
+          await prisma.auditLog.findUnique({ where: { id: audit.id } }),
+        ).toEqual(audit);
+      }
     });
 
     it('persists 100 finite distinct employee colors in a real isolated store', async () => {

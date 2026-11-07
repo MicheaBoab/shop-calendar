@@ -132,11 +132,18 @@ export class StaffColorsService implements OnModuleInit {
     userId: string,
     color: string,
   ) {
-    // Never touches appointments: their historical color snapshots are fixed.
     await tx.staffColorMap.update({
       where: { shopId_userId: { shopId, userId } },
       data: { color },
     });
+    // Keep every appointment snapshot for this employee in sync, including
+    // cancelled and soft-deleted history. A raw update intentionally avoids
+    // Prisma's @updatedAt behavior and leaves every other field untouched.
+    // Pending assignments have their own user ID and are therefore excluded.
+    await tx.$executeRaw`
+      UPDATE appointments
+      SET employee_color = ${color}
+      WHERE shop_id = ${shopId} AND employee_id = ${userId}`;
   }
 
   private async find(

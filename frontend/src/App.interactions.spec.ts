@@ -479,6 +479,11 @@ const makeFetchMock = (role: TestRole, options: TestFetchOptions = {}) => {
     }
     if (url.endsWith("/emp-1/color") && method === "PATCH") {
       reassignedColor = JSON.parse(String(init?.body)).candidateColor;
+      appointments.forEach((appointment) => {
+        if (appointment.employeeId === "emp-1") {
+          appointment.employeeColor = reassignedColor;
+        }
+      });
       return ok({ id: "emp-1", color: reassignedColor });
     }
     if (url.includes("/users") && method === "GET") {
@@ -1020,7 +1025,7 @@ describe("App interaction seams", () => {
     finally { await cleanupRender(reopened.root, reopened.container); }
   });
 
-  it("admin compares all local employees, previews/cancels without writes, and confirms without changing appointment snapshots", async () => {
+  it("admin compares employees, previews/cancels, and refreshes staff and appointment colors after reassignment", async () => {
     const today = new Date();
     const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280, {
       users: [
@@ -1036,6 +1041,9 @@ describe("App interaction seams", () => {
       }],
     });
     const writes = () => fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/color") && init?.method === "PATCH");
+    const getCount = (path: string) => fetchMock.mock.calls.filter(
+      ([url, init]) => String(url).endsWith(path) && (init?.method ?? "GET") === "GET",
+    ).length;
     try {
       await clickButton(container, "Admin");
       const colors = container.querySelector(".staff-color-list")!;
@@ -1050,14 +1058,18 @@ describe("App interaction seams", () => {
       expect(container.querySelector(".staff-color-preview")).toBeNull();
       expect(writes()).toHaveLength(0);
       await clickButton(container, "Preview reassignment");
+      const staffReadsBeforeConfirm = getCount("/users/staff");
+      const appointmentReadsBeforeConfirm = getCount("/appointments");
       await clickButton(container, "Confirm color");
       expect(writes()).toHaveLength(1);
       expect(JSON.parse(String(writes()[0][1]!.body))).toEqual({ currentColor: "#60a5fa", candidateColor: "#f87171" });
+      expect(getCount("/users/staff")).toBeGreaterThan(staffReadsBeforeConfirm);
+      expect(getCount("/appointments")).toBeGreaterThan(appointmentReadsBeforeConfirm);
       expect(colors.textContent).toContain("Current: #f87171");
       await clickButton(container, "Calendar");
       const event = calendarPropsSpy.mock.calls[calendarPropsSpy.mock.calls.length - 1][0].events.find((entry: any) => entry.id === "appt-1");
-      expect(event.backgroundColor).toContain("#60a5fa");
-      expect(event.backgroundColor).not.toContain("#f87171");
+      expect(event.backgroundColor).toContain("#f87171");
+      expect(event.backgroundColor).not.toContain("#60a5fa");
     } finally { await cleanupRender(root, container); }
   });
 

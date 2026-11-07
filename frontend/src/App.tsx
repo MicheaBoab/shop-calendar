@@ -2035,8 +2035,21 @@ function App() {
       if (!isSameShopContext(auth)) return;
       setColorPreview(null);
       setNotice(t('admin.colorSaved'), 'success');
-      try { await loadUsers(); }
-      catch (error) { if (isSameShopContext(auth)) reportMutationRefreshFailure('users', error); }
+      const refreshResults = await Promise.allSettled([
+        loadUsers(),
+        loadAppointments(),
+      ]);
+      if (isSameShopContext(auth)) {
+        if (refreshResults[0].status === 'rejected') {
+          reportMutationRefreshFailure('users', refreshResults[0].reason);
+        }
+        if (refreshResults[1].status === 'rejected') {
+          reportMutationRefreshFailure(
+            'appointments',
+            refreshResults[1].reason,
+          );
+        }
+      }
     } catch (error) {
       if (isSameShopContext(auth)) {
         setColorPreview(null);

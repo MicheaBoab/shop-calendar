@@ -162,27 +162,70 @@ export class UsersService {
     });
   }
 
-  async reassignUserColor(id: string, dto: ReassignUserColorDto, actorUserId: string) {
+  async reassignUserColor(
+    id: string,
+    dto: ReassignUserColorDto,
+    actorUserId: string,
+  ) {
     const shopId = requireCurrentShopId();
-    const auditContext = await this.auditService.createAuditContext(actorUserId);
-    return this.basePrismaService.$transaction(async (tx) => {
-      await this.staffColors.lock(tx, shopId);
-      const user = await this.requireColorEmployee(tx, id, shopId);
-      const currentColor = await this.staffColors.get(user, shopId, tx);
-      const candidateColor = await this.staffColors.previewReassignment(tx, shopId);
-      if (dto.currentColor !== currentColor || dto.candidateColor !== candidateColor) {
-        throw new ConflictException('Staff colors changed. Preview again before confirming.');
+    const auditContext =
+      await this.auditService.createAuditContext(actorUserId);
+    try {
+      return await this.basePrismaService.$transaction(
+        async (tx) => {
+          await this.staffColors.lock(tx, shopId);
+          const user = await this.requireColorEmployee(tx, id, shopId);
+          const currentColor = await this.staffColors.get(user, shopId, tx);
+          const candidateColor = await this.staffColors.previewReassignment(
+            tx,
+            shopId,
+          );
+          if (
+            dto.currentColor !== currentColor ||
+            dto.candidateColor !== candidateColor
+          ) {
+            throw new ConflictException(
+              'Staff colors changed. Preview again before confirming.',
+            );
+          }
+          await this.staffColors.saveReassignment(
+            tx,
+            shopId,
+            id,
+            candidateColor,
+          );
+          await this.auditService.recordUserManagementChange(
+            {
+              actorUserId,
+              action: 'user.color.update',
+              entityId: id,
+              beforePayload: this.toAuditPayload({
+                ...user,
+                color: currentColor,
+              }),
+              afterPayload: this.toAuditPayload({
+                ...user,
+                color: candidateColor,
+              }),
+            },
+            auditContext,
+            tx,
+          );
+          return { id, color: candidateColor };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2034'
+      ) {
+        throw new ConflictException(
+          'A concurrent color or appointment change occurred. Refresh and retry.',
+        );
       }
-      await this.staffColors.saveReassignment(tx, shopId, id, candidateColor);
-      await this.auditService.recordUserManagementChange({
-        actorUserId,
-        action: 'user.color.update',
-        entityId: id,
-        beforePayload: this.toAuditPayload({ ...user, color: currentColor }),
-        afterPayload: this.toAuditPayload({ ...user, color: candidateColor }),
-      }, auditContext, tx);
-      return { id, color: candidateColor };
-    });
+      throw error;
+    }
   }
 
   private async requireColorEmployee(tx: Prisma.TransactionClient, id: string, shopId: string) {

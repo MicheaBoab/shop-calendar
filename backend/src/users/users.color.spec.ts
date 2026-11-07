@@ -1,5 +1,5 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
-import { UserRole, UserStatus } from '@prisma/client';
+import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import { UsersService } from './users.service';
 import { StaffColorsService } from '../staff-colors/staff-colors.service';
 import { shopContextStorage } from '../common/shop-context/shop-context';
@@ -17,6 +17,7 @@ describe('local employee color reassignment transaction', () => {
     user: { findFirst: jest.fn() },
     staffColorMap: { findUnique: jest.fn(), update: jest.fn() },
     $queryRaw: jest.fn(),
+    $executeRaw: jest.fn(),
     $transaction: jest.fn(),
   };
   const audit = { createAuditContext: jest.fn(), recordUserManagementChange: jest.fn() };
@@ -42,7 +43,7 @@ describe('local employee color reassignment transaction', () => {
     audit.createAuditContext.mockResolvedValue({ shopId: 'shop-a' });
     audit.recordUserManagementChange.mockResolvedValue(undefined);
   });
-  it('preview is read-only; confirmation persists only the allocator candidate with an audit, no appointment writes', async () => {
+  it('preview is read-only; confirmation persists the candidate and changes only appointment color snapshots', async () => {
     const preview = await inShop(() => service.previewUserColor(employee.id));
     expect(preview).toEqual({
       currentColor: '#60a5fa',
@@ -59,6 +60,19 @@ describe('local employee color reassignment transaction', () => {
     expect(tx.staffColorMap.update).toHaveBeenCalledWith({
       where: { shopId_userId: { shopId: 'shop-a', userId: employee.id } },
       data: { color: preview.candidateColor },
+    });
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    const [sql, ...values] = tx.$executeRaw.mock.calls[0] as [
+      TemplateStringsArray,
+      ...unknown[],
+    ];
+    const normalizedSql = sql.join('').replace(/\s+/g, ' ').trim();
+    expect(normalizedSql).toBe(
+      'UPDATE appointments SET employee_color = WHERE shop_id = AND employee_id =',
+    );
+    expect(values).toEqual([preview.candidateColor, 'shop-a', employee.id]);
+    expect(tx.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     });
     expect(audit.recordUserManagementChange).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -80,6 +94,27 @@ describe('local employee color reassignment transaction', () => {
     current = '#22d3ee';
     await expect(inShop(() => service.reassignUserColor(employee.id, preview as never, 'admin-a'))).rejects.toBeInstanceOf(ConflictException);
     expect(tx.staffColorMap.update).not.toHaveBeenCalled();
+    expect(audit.recordUserManagementChange).not.toHaveBeenCalled();
+  });
+  it('returns a retryable conflict when the serializable color transaction conflicts', async () => {
+    const preview = await inShop(() => service.previewUserColor(employee.id));
+    tx.$transaction.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('serialization failure', {
+        code: 'P2034',
+        clientVersion: 'test',
+      }),
+    );
+    await expect(
+      inShop(() =>
+        service.reassignUserColor(employee.id, preview as never, 'admin-a'),
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      message:
+        'A concurrent color or appointment change occurred. Refresh and retry.',
+    });
+    expect(tx.staffColorMap.update).not.toHaveBeenCalled();
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
     expect(audit.recordUserManagementChange).not.toHaveBeenCalled();
   });
   it('excludes foreign/deleted/nonemployee users through the query and blocks the local pending account', async () => {
