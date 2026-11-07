@@ -3,7 +3,7 @@ import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import { UsersService } from './users.service';
 import { StaffColorsService } from '../staff-colors/staff-colors.service';
 import { shopContextStorage } from '../common/shop-context/shop-context';
-import { chooseColor } from '../staff-colors/color-palette';
+import { chooseColor, COLOR_CANDIDATES } from '../staff-colors/color-palette';
 import { DEFAULT_PENDING_EMPLOYEE_COLOR } from '../common/pending-assignment';
 
 describe('local employee color reassignment transaction', () => {
@@ -45,7 +45,7 @@ describe('local employee color reassignment transaction', () => {
   });
   it('preview is read-only; confirmation persists the candidate and changes only appointment color snapshots', async () => {
     const preview = await inShop(() => service.previewUserColor(employee.id));
-    expect(preview).toEqual({
+    expect(preview).toMatchObject({
       currentColor: '#60a5fa',
       candidateColor: chooseColor(['#facc15', '#60a5fa', '#4ade80'], DEFAULT_PENDING_EMPLOYEE_COLOR),
     });
@@ -90,7 +90,7 @@ describe('local employee color reassignment transaction', () => {
     reservations.push({ color: preview.candidateColor });
     await expect(inShop(() => service.reassignUserColor(employee.id, preview as never, 'admin-a'))).rejects.toBeInstanceOf(ConflictException);
     reservations = [{ color: '#4ade80' }];
-    await expect(inShop(() => service.reassignUserColor(employee.id, { currentColor: current, candidateColor: '#000000' }, 'admin-a'))).rejects.toBeInstanceOf(ConflictException);
+    await expect(inShop(() => service.reassignUserColor(employee.id, { ...preview, currentColor: current, candidateColor: '#000000' } as never, 'admin-a'))).rejects.toBeInstanceOf(ConflictException);
     current = '#22d3ee';
     await expect(inShop(() => service.reassignUserColor(employee.id, preview as never, 'admin-a'))).rejects.toBeInstanceOf(ConflictException);
     expect(tx.staffColorMap.update).not.toHaveBeenCalled();
@@ -117,11 +117,44 @@ describe('local employee color reassignment transaction', () => {
     expect(tx.$executeRaw).not.toHaveBeenCalled();
     expect(audit.recordUserManagementChange).not.toHaveBeenCalled();
   });
+  it('cycles distinct signed candidates without writes, and confirms exactly the last one', async () => {
+      const seen: string[] = [];
+      let preview: Awaited<ReturnType<typeof service.previewUserColor>>;
+      for (let i = 0; i < 4; i++) {
+        preview = await inShop(() => service.previewUserColor(employee.id, [...seen]));
+        expect(preview.candidateColor).not.toBeNull();
+        expect(seen).not.toContain(preview.candidateColor);
+        seen.push(preview.candidateColor!);
+      }
+      expect(tx.staffColorMap.update).not.toHaveBeenCalled();
+      expect(tx.$executeRaw).not.toHaveBeenCalled();
+      const result = await inShop(() => service.reassignUserColor(employee.id, preview! as never, 'admin-a'));
+      expect(result.color).toBe(seen.at(-1));
+      expect(current).toBe(seen.at(-1));
+    });
+    it('rejects tampered, expired and cross-employee preview credentials without writes', async () => {
+      const preview = await inShop(() => service.previewUserColor(employee.id));
+      await expect(inShop(() => service.reassignUserColor('other', preview as never, 'admin-a'))).rejects.toBeInstanceOf(ConflictException);
+      await expect(inShop(() => service.reassignUserColor(employee.id, {
+        ...preview, previewToken: `${preview.previewToken}x`,
+      } as never, 'admin-a'))).rejects.toBeInstanceOf(ConflictException);
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 11 * 60_000);
+      try {
+        await expect(inShop(() => service.reassignUserColor(employee.id, preview as never, 'admin-a'))).rejects.toBeInstanceOf(ConflictException);
+      } finally { clock.mockRestore(); }
+      expect(tx.staffColorMap.update).not.toHaveBeenCalled();
+    });
   it('excludes foreign/deleted/nonemployee users through the query and blocks the local pending account', async () => {
     tx.user.findFirst.mockResolvedValue(null);
     await expect(inShop(() => service.previewUserColor('foreign'))).rejects.toBeInstanceOf(NotFoundException);
     tx.user.findFirst.mockResolvedValue({ ...employee, username: 'pending_assignment__shop-a' });
     await expect(inShop(() => service.previewUserColor(employee.id))).rejects.toBeInstanceOf(NotFoundException);
     expect(tx.staffColorMap.update).not.toHaveBeenCalled();
+  });
+  it('reports finite candidate exhaustion without repeating or writing', async () => {
+    const preview = await inShop(() => service.previewUserColor(employee.id, COLOR_CANDIDATES));
+    expect(preview).toEqual({ currentColor: current, candidateColor: null, exhausted: true });
+    expect(tx.staffColorMap.update).not.toHaveBeenCalled();
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
   });
 });

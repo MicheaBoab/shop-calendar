@@ -12,6 +12,7 @@ import {
   UserStatus,
 } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { SHOP_SCOPED_PRISMA } from '../common/prisma/prisma.module';
 import type { ShopScopedPrismaClient } from '../common/prisma/prisma.module';
 import { requireCurrentShopId } from '../common/shop-context/shop-context';
@@ -28,6 +29,30 @@ import { ReassignUserColorDto } from './dto/reassign-user-color.dto';
 
 @Injectable()
 export class UsersService {
+  // Ephemeral previews are intentionally invalid after a process restart.
+  private readonly colorPreviewKey = randomBytes(32);
+
+  private signColorPreview(payload: string) {
+    return createHmac('sha256', this.colorPreviewKey).update(payload).digest('base64url');
+  }
+
+  private readColorPreview(dto: ReassignUserColorDto, id: string, shopId: string): string[] {
+    try {
+      const [payload, signature, extra] = dto.previewToken.split('.');
+      const expected = Buffer.from(this.signColorPreview(payload));
+      const actual = Buffer.from(signature);
+      if (extra || actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error();
+      const data = JSON.parse(Buffer.from(payload, 'base64url').toString()) as {
+        id: string; shopId: string; currentColor: string; candidateColor: string;
+        excluded: string[]; expiresAt: number;
+      };
+      if (data.id !== id || data.shopId !== shopId || data.expiresAt <= Date.now()
+        || data.currentColor !== dto.currentColor || data.candidateColor !== dto.candidateColor) throw new Error();
+      return data.excluded;
+    } catch {
+      throw new ConflictException('Color preview expired or invalid. Preview again before confirming.');
+    }
+  }
   constructor(
     @Inject(SHOP_SCOPED_PRISMA)
     private readonly prismaService: ShopScopedPrismaClient,
@@ -150,15 +175,28 @@ export class UsersService {
     return created;
   }
 
-  async previewUserColor(id: string) {
+  async previewUserColor(id: string, excluded: string[] = []) {
     const shopId = requireCurrentShopId();
+    if (excluded.length > 750 || excluded.some((color) => !/^#[0-9a-f]{6}$/.test(color))) {
+      throw new BadRequestException('Invalid excluded color candidates.');
+    }
     return this.basePrismaService.$transaction(async (tx) => {
       await this.staffColors.lock(tx, shopId);
       const user = await this.requireColorEmployee(tx, id, shopId);
-      return {
-        currentColor: await this.staffColors.get(user, shopId, tx),
-        candidateColor: await this.staffColors.previewReassignment(tx, shopId),
-      };
+      const currentColor = await this.staffColors.get(user, shopId, tx);
+      let candidateColor: string;
+      try {
+        candidateColor = await this.staffColors.previewReassignment(tx, shopId, excluded);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Staff color candidates exhausted') {
+          return { currentColor, candidateColor: null, exhausted: true };
+        }
+        throw error;
+      }
+      const payload = Buffer.from(JSON.stringify({
+        id, shopId, currentColor, candidateColor, excluded, expiresAt: Date.now() + 10 * 60_000,
+      })).toString('base64url');
+      return { currentColor, candidateColor, previewToken: `${payload}.${this.signColorPreview(payload)}` };
     });
   }
 
@@ -176,9 +214,11 @@ export class UsersService {
           await this.staffColors.lock(tx, shopId);
           const user = await this.requireColorEmployee(tx, id, shopId);
           const currentColor = await this.staffColors.get(user, shopId, tx);
+          const excluded = this.readColorPreview(dto, id, shopId);
           const candidateColor = await this.staffColors.previewReassignment(
             tx,
             shopId,
+            excluded,
           );
           if (
             dto.currentColor !== currentColor ||

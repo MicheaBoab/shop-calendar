@@ -209,13 +209,15 @@ describe('ADMIN global manager management HTTP (memory only)', () => {
 
   it('allows admin to preview then confirm only a local employee color and rejects stale/manual candidates', async () => {
     const preview = await call('get', '/users/employee-b/color-preview').expect(200);
-    expect(preview.body as unknown).toEqual({ currentColor: '#60a5fa', candidateColor: '#f87171' });
+    expect(preview.body as unknown).toMatchObject({ currentColor: '#60a5fa', candidateColor: '#f87171', previewToken: expect.any(String) });
     expect(colorSave).not.toHaveBeenCalled();
     await call('patch', '/users/employee-b/color').send(preview.body).expect(200);
     expect(colorSave).toHaveBeenCalledWith(base, 'shop-b', 'employee-b', '#f87171');
     expect(record).toHaveBeenCalledTimes(1);
     colorSave.mockClear();
-    await call('patch', '/users/employee-b/color').send({ currentColor: '#60a5fa', candidateColor: '#000000' }).expect(409);
+    await call('patch', '/users/employee-b/color').send({ ...preview.body, candidateColor: '#000000' }).expect(409);
+    await call('get', '/users/employee-b/color-preview?excluded=invalid').expect(400);
+    await call('patch', '/users/employee-b/color').send({ currentColor: '#60a5fa', candidateColor: '#f87171' }).expect(400);
     await call('patch', '/users/employee-b/color').send({ currentColor: '#60a5fa' }).expect(400);
     expect(colorSave).not.toHaveBeenCalled();
     for (const id of ['employee-a', 'manager-a', 'admin-b', 'shared-a', 'deleted-manager-a']) {

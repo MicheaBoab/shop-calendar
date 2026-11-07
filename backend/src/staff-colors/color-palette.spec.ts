@@ -1,13 +1,14 @@
 import {
-  BASE_COLORS,
   COLOR_CANDIDATES,
   FAMILY_COLORS,
+  calendarEventColor,
   chooseColor,
   colorDistance,
   colorFamily,
   hueDistance,
   luminance,
   normalizeColor,
+  renderedColorDistance,
 } from './color-palette';
 import { DEFAULT_PENDING_EMPLOYEE_COLOR as pending } from '../common/pending-assignment';
 
@@ -22,7 +23,7 @@ const minimum = (colors: string[]) =>
       colors.slice(i + 1).map((d) => colorDistance(c, d)),
     ),
   );
-const mix = (color: string) =>
+const legacyMix = (color: string) =>
   `#${[1, 3, 5]
     .map((offset, i) =>
       Math.round(
@@ -33,54 +34,53 @@ const mix = (color: string) =>
         .padStart(2, '0'),
     )
     .join('')}`;
+// Captured before changes from the production allocator for the 12-person fixture.
+const legacy12 = [
+  '#facc15',
+  '#4ade80',
+  '#e879f9',
+  '#f87171',
+  '#22d3ee',
+  '#818cf8',
+  '#eec287',
+  '#b1ef39',
+  '#7839ef',
+  '#e78dc0',
+  '#fb923c',
+  '#ef39a1',
+];
 
 describe('family-first finite dark accent allocator (Delta E 76)', () => {
-  it('spreads first 3/5/6 across six families; eighth necessarily reuses a family', () => {
+  it('spreads the first six across six families and keeps later colors unique', () => {
     const colors = allocate(8);
-    expect(colors.slice(0, 6)).toEqual([
-      '#facc15',
-      '#4ade80',
-      '#e879f9',
-      '#f87171',
-      '#22d3ee',
-      '#818cf8',
-    ]);
     for (const n of [3, 5, 6, 8])
       expect(new Set(colors.slice(0, n).map(colorFamily)).size).toBe(
         Math.min(n, 6),
       );
-    expect(minimum(colors.slice(0, 5))).toBeGreaterThan(65);
+    expect(new Set(colors).size).toBe(8);
   });
 
-  it('improves the same first-five scenario after real 28% sRGB dark mixing', () => {
-    // Frozen previous production rule, not a hand-picked comparison palette.
-    const before: string[] = [];
-    for (let i = 0; i < 5; i++) {
-      const score = (c: string) =>
-        Math.min(...[...before, pending].map((u) => colorDistance(c, u)));
-      const best = (candidates: string[]) =>
-        candidates
-          .filter((c) => !before.includes(c) && c !== pending)
-          .reduce((a, b) => (score(b) > score(a) ? b : a));
-      const base = best(BASE_COLORS);
-      before.push(score(base) >= 20 ? base : best(COLOR_CANDIDATES));
+  it('improves 8–12 staff separation using the actual 40% calendar tint', () => {
+    const before = legacy12.map(legacyMix);
+    for (const count of [8, 10, 12]) {
+      const after = allocate(count).map(calendarEventColor);
+      expect(minimum(after)).toBeGreaterThan(minimum(before.slice(0, count)));
+      expect(minimum(after)).toBeGreaterThan(15);
+      expect(new Set(allocate(count)).size).toBe(count);
     }
-    const after = allocate(5);
-    expect(minimum(before.map(mix))).toBeCloseTo(18.48316, 4);
-    expect(minimum(after.map(mix))).toBeGreaterThan(22);
-    expect(minimum(after.map(mix))).toBeGreaterThan(
-      minimum(before.map(mix)) + 4,
-    );
-    console.log(
-      JSON.stringify({
-        before,
-        after,
-        beforeMixed: before.map(mix),
-        afterMixed: after.map(mix),
-        beforeMixedMinDeltaE76: minimum(before.map(mix)),
-        afterMixedMinDeltaE76: minimum(after.map(mix)),
-      }),
-    );
+    expect(minimum(before)).toBeCloseTo(11.2036, 3);
+    const after = allocate(12).map(calendarEventColor);
+    expect(minimum(after)).toBeGreaterThan(minimum(before) + 4);
+    const lightText = luminance('#f8fafc');
+    expect(
+      Math.min(
+        ...COLOR_CANDIDATES.map((color) => {
+          const background = luminance(calendarEventColor(color));
+          return (lightText + 0.05) / (background + 0.05);
+        }),
+      ),
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(renderedColorDistance('#60a5fa', '#60a5fa')).toBe(0);
   });
 
   it('reserves an existing manager family before employee allocation', () => {
@@ -127,7 +127,9 @@ describe('family-first finite dark accent allocator (Delta E 76)', () => {
     expect(
       new Set(allocate(6, ['#888888']).slice(1).map(colorFamily)).size,
     ).toBe(6);
-    expect(allocate(5).every((c) => colorDistance(c, pending) >= 20)).toBe(
+    expect(
+      allocate(5).every((c) => renderedColorDistance(c, pending) >= 20),
+    ).toBe(
       true,
     );
   });
@@ -136,7 +138,9 @@ describe('family-first finite dark accent allocator (Delta E 76)', () => {
     const used = [...FAMILY_COLORS];
     const selected = chooseColor(used, pending);
     const score = (c: string) =>
-      Math.min(...[...used, pending].map((u) => colorDistance(c, u)));
+      Math.min(
+        ...[...used, pending].map((u) => renderedColorDistance(c, u)),
+      );
     expect(score(selected)).toBeCloseTo(
       Math.max(...COLOR_CANDIDATES.filter((c) => !used.includes(c)).map(score)),
     );

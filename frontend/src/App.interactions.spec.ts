@@ -474,8 +474,12 @@ const makeFetchMock = (role: TestRole, options: TestFetchOptions = {}) => {
       return ok(auth);
     }
 
-    if (url.endsWith("/emp-1/color-preview") && method === "GET") {
-      return ok({ currentColor: reassignedColor ?? "#60a5fa", candidateColor: "#f87171" });
+    if (url.includes("/emp-1/color-preview") && method === "GET") {
+      const excluded = new URL(url).searchParams.get("excluded")?.split(",") ?? [];
+      const candidateColor = ["#f87171", "#f472b6", "#22d3ee"].find(color => !excluded.includes(color));
+      return ok(candidateColor
+        ? { currentColor: reassignedColor ?? "#60a5fa", candidateColor, previewToken: `signed-${candidateColor}` }
+        : { currentColor: reassignedColor ?? "#60a5fa", candidateColor: null, exhausted: true });
     }
     if (url.endsWith("/emp-1/color") && method === "PATCH") {
       reassignedColor = JSON.parse(String(init?.body)).candidateColor;
@@ -1048,27 +1052,34 @@ describe("App interaction seams", () => {
       await clickButton(container, "Admin");
       const colors = container.querySelector(".staff-color-list")!;
       expect(colors.querySelectorAll(".staff-color-card")).toHaveLength(2);
-      expect(colors.textContent).toContain("#60a5fa");
-      expect(colors.textContent).toContain("#4ade80");
+      expect(colors.textContent).not.toMatch(/#[0-9a-f]{6}/);
+      expect(colors.querySelector(".staff-color-swatch")?.getAttribute("style")).toContain("rgb(96, 165, 250)");
       expect(colors.textContent).not.toContain("Manager");
-      await clickButton(container, "Preview reassignment");
-      expect(container.querySelector(".staff-color-preview")?.textContent).toContain("#f87171");
+      await clickButton(container, "Reassign");
+      expect(container.querySelector(".staff-color-candidate .staff-color-swatch")?.getAttribute("style")).toContain("rgb(248, 113, 113)");
+      await clickButton(container, "Another color");
+      expect(container.querySelector(".staff-color-candidate .staff-color-swatch")?.getAttribute("style")).toContain("rgb(244, 114, 182)");
       expect(writes()).toHaveLength(0);
       await clickButton(container, "Cancel");
       expect(container.querySelector(".staff-color-preview")).toBeNull();
       expect(writes()).toHaveLength(0);
-      await clickButton(container, "Preview reassignment");
+      await clickButton(container, "Reassign");
+      await clickButton(container, "Another color");
+      await clickButton(container, "Another color");
+      await clickButton(container, "Another color");
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("No more unseen");
+      expect(findButtonByLabel(container, "Another color")?.disabled).toBe(true);
       const staffReadsBeforeConfirm = getCount("/users/staff");
       const appointmentReadsBeforeConfirm = getCount("/appointments");
-      await clickButton(container, "Confirm color");
+      await clickButton(container, "Confirm use");
       expect(writes()).toHaveLength(1);
-      expect(JSON.parse(String(writes()[0][1]!.body))).toEqual({ currentColor: "#60a5fa", candidateColor: "#f87171" });
+      expect(JSON.parse(String(writes()[0][1]!.body))).toEqual({ currentColor: "#60a5fa", candidateColor: "#22d3ee", previewToken: "signed-#22d3ee" });
       expect(getCount("/users/staff")).toBeGreaterThan(staffReadsBeforeConfirm);
       expect(getCount("/appointments")).toBeGreaterThan(appointmentReadsBeforeConfirm);
-      expect(colors.textContent).toContain("Current: #f87171");
+      expect(colors.querySelector(".staff-color-swatch")?.getAttribute("style")).toContain("rgb(34, 211, 238)");
       await clickButton(container, "Calendar");
       const event = calendarPropsSpy.mock.calls[calendarPropsSpy.mock.calls.length - 1][0].events.find((entry: any) => entry.id === "appt-1");
-      expect(event.backgroundColor).toContain("#f87171");
+      expect(event.backgroundColor).toContain("#22d3ee");
       expect(event.backgroundColor).not.toContain("#60a5fa");
     } finally { await cleanupRender(root, container); }
   });
@@ -1110,8 +1121,14 @@ describe("App interaction seams", () => {
       const props = calendarPropsSpy.mock.calls[calendarPropsSpy.mock.calls.length - 1][0];
       return props.events.map((event: { id: string }) => event.id);
     };
-    const agendaPhones = () => Array.from(container.querySelectorAll(".agenda-item"))
-      .map((item) => item.textContent ?? "");
+    const agendaPhones = async () => {
+      await clickButton(container, "Today agenda");
+      const phones = Array.from(container.querySelectorAll(".agenda-item")).map((item) => item.textContent ?? "");
+      await clickButton(container, "Calendar");
+      return phones;
+    };
+    const filterButton = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>(".legend-filter-button"))
+      .find(button => button.textContent?.trim() === label);
 
     try {
       expect(calendarCard?.querySelector(".toolbar select")).toBeNull();
@@ -1127,34 +1144,34 @@ describe("App interaction seams", () => {
       annaButton?.focus();
       expect(document.activeElement).toBe(annaButton);
       await clickButton(container, "Anna");
-      expect(findFilter("Anna")?.getAttribute("aria-pressed")).toBe("true");
+      expect(filterButton("Anna")?.getAttribute("aria-pressed")).toBe("true");
       expect(findFilter("All employees")?.getAttribute("aria-pressed")).toBe("false");
       expect(findFilter("Ben")?.getAttribute("aria-pressed")).toBe("false");
       expect(eventIds()).toEqual(["anna-appt"]);
-      expect(agendaPhones().join(" ")).toContain("1111111111");
-      expect(agendaPhones().join(" ")).not.toContain("2222222222");
+      expect((await agendaPhones()).join(" ")).toContain("1111111111");
+      expect((await agendaPhones()).join(" ")).not.toContain("2222222222");
 
       await clickButton(container, "Ben");
-      expect(findFilter("Ben")?.getAttribute("aria-pressed")).toBe("true");
-      expect(findFilter("Anna")?.getAttribute("aria-pressed")).toBe("false");
+      expect(filterButton("Ben")?.getAttribute("aria-pressed")).toBe("true");
+      expect(filterButton("Anna")?.getAttribute("aria-pressed")).toBe("false");
       expect(eventIds()).toEqual(["ben-appt"]);
-      expect(agendaPhones().join(" ")).toContain("2222222222");
-      expect(agendaPhones().join(" ")).not.toContain("1111111111");
+      expect((await agendaPhones()).join(" ")).toContain("2222222222");
+      expect((await agendaPhones()).join(" ")).not.toContain("1111111111");
 
       await clickButton(container, "Ben");
-      expect(findFilter("Ben")?.getAttribute("aria-pressed")).toBe("true");
-      expect(findFilter("All employees")?.getAttribute("aria-pressed")).toBe("false");
+      expect(filterButton("Ben")?.getAttribute("aria-pressed")).toBe("true");
+      expect(filterButton("All employees")?.getAttribute("aria-pressed")).toBe("false");
       expect(eventIds()).toEqual(["ben-appt"]);
 
       await clickButton(container, "pending");
-      expect(findFilter("pending")?.getAttribute("aria-pressed")).toBe("true");
+      expect(filterButton("pending")?.getAttribute("aria-pressed")).toBe("true");
       expect(eventIds()).toEqual(["pending-appt"]);
-      expect(agendaPhones().join(" ")).toContain("3333333333");
+      expect((await agendaPhones()).join(" ")).toContain("3333333333");
 
       await clickButton(container, "All employees");
-      expect(findFilter("All employees")?.getAttribute("aria-pressed")).toBe("true");
+      expect(filterButton("All employees")?.getAttribute("aria-pressed")).toBe("true");
       expect(eventIds()).toEqual(["anna-appt", "ben-appt", "pending-appt"]);
-      expect(agendaPhones()).toHaveLength(3);
+      expect(await agendaPhones()).toHaveLength(3);
     } finally {
       await cleanupRender(root, container);
     }
@@ -1632,6 +1649,121 @@ describe("App interaction seams", () => {
     expect(findButtonByLabel(container, "Day")?.className).toContain("active");
 
     await cleanupRender(root, container);
+  });
+
+  it.each(["ADMIN", "EMPLOYEE", "SHOP_ACCOUNT"] as const)("moves today's agenda to its own tab and returns %s to editing", async role => {
+    const { container, root } = await renderAndLogin(role, 390);
+    try {
+      expect(container.querySelector(".day-agenda")).toBeNull();
+      await clickButton(container, "Today agenda");
+      expect(container.querySelector('[data-testid="mock-calendar"]')).toBeNull();
+      expect(container.querySelectorAll(".agenda-item")).toHaveLength(2);
+      await clickButton(container, "Employee");
+      expect(container.querySelector(".agenda-groups")).not.toBeNull();
+      await clickElement(container.querySelector(".agenda-item") as HTMLElement);
+      expect(container.querySelector(".day-agenda")).toBeNull();
+      expect(container.querySelector(".calendar-event-editing")).not.toBeNull();
+      expect(findButtonByLabel(container, "Update appointment")).not.toBeNull();
+    } finally { await cleanupRender(root, container); }
+  });
+
+  it("uses one local-date selection for overview counts, revenue, earliest and rows, independent of calendar and agenda", async () => {
+    const now = new Date();
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrow = new Date(day); tomorrow.setDate(day.getDate() + 1);
+    const yesterday = new Date(day); yesterday.setDate(day.getDate() - 1);
+    const booking = (id: string, start: Date, price: string) => ({
+      id, employeeId: "emp-1", startAt: start.toISOString(),
+      endAt: new Date(start.getTime() + 30 * 60_000).toISOString(),
+      phone: "3125551234", price, customerName: id, status: "ACTIVE",
+    });
+    const lastMinute = new Date(tomorrow.getTime() - 60_000);
+    const { container, root } = await renderAndLogin("ADMIN", 1280, { appointments: [
+      booking("midnight", day, "10"), booking("late", lastMinute, "20"),
+      booking("tomorrow", tomorrow, "40"), booking("yesterday", yesterday, "80"),
+    ] });
+    try {
+      await clickButton(container, "Overview");
+      const rows = () => container.querySelectorAll(".appointment-item");
+      const pills = () => [...container.querySelectorAll(".summary-pill strong")].map(el => el.textContent);
+      expect(rows()).toHaveLength(2);
+      expect(pills().slice(0, 2)).toEqual(["2", "$30.00"]);
+      expect(pills()[2]).toContain("00:00");
+      await clickButton(container, container.querySelector('button[aria-label="Choose overview date"]')!.textContent!);
+      await setControlValue(container.querySelector('input[type="date"]') as HTMLInputElement,
+        `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`);
+      expect(rows()).toHaveLength(1);
+      expect(rows()[0].textContent).toContain("$40");
+      expect(pills().slice(0, 2)).toEqual(["1", "$40.00"]);
+      expect(container.querySelector("h2")?.textContent).not.toBe("Today's overview");
+      await clickButton(container, "Today agenda");
+      expect(container.querySelectorAll(".agenda-item")).toHaveLength(2);
+      await clickButton(container, "Overview");
+      expect(rows()).toHaveLength(1);
+    } finally { await cleanupRender(root, container); }
+  });
+
+  it("clears editing highlight on cancel, new draft, tab navigation and save, switches selected appointment and preserves reload", async () => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 390);
+    const selected = () => container.querySelector(".calendar-event-editing");
+    try {
+      await clickButton(container, "Mock event click");
+      expect(container.querySelectorAll(".calendar-event-editing")).toHaveLength(1);
+      expect(selected()?.textContent).toContain("Editing");
+      await clickButton(container, "Calendar");
+      expect(selected()).not.toBeNull();
+      await clickButton(container, "Cancel");
+      expect(selected()).toBeNull();
+      await clickButton(container, "Mock event click");
+      await clickButton(container, "Mock date click");
+      expect(selected()).toBeNull();
+      await clickButton(container, "Mock event click");
+      await clickButton(container, "Today agenda");
+      await clickButton(container, "Calendar");
+      expect(selected()).toBeNull();
+      await clickButton(container, "Mock event click");
+      setMockEventClickId("appt-2");
+      await clickButton(container, "Mock event click");
+      expect(container.querySelectorAll(".calendar-event-editing")).toHaveLength(1);
+      expect(selected()?.classList.contains("calendar-event-cancelled")).toBe(true);
+      setMockEventClickId("appt-1");
+      await clickButton(container, "Mock event click");
+      const reads = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/appointments")).length;
+      await act(async () => { MockEventSource.instances[MockEventSource.instances.length - 1]!.emit("appointments.changed"); });
+      await waitFor(() => fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/appointments")).length > reads);
+      expect(selected()).not.toBeNull();
+      await clickButton(container, "Update appointment");
+      expect(selected()).toBeNull();
+      expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes("/appointments/appt-1") && init?.method === "PATCH")).toBe(true);
+    } finally { await cleanupRender(root, container); }
+  });
+
+  it("clears editing highlight when a reload removes the selected appointment", async () => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
+    try {
+      await clickButton(container, "Mock event click");
+      const original = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation((url, init) => String(url).endsWith("/appointments") && (init?.method ?? "GET") === "GET"
+        ? Promise.resolve(new Response("[]", { status: 200 })) : original(url, init));
+      await act(async () => { MockEventSource.instances[MockEventSource.instances.length - 1]!.emit("appointments.changed"); });
+      await waitFor(() => !!findButtonByLabel(container, "Create appointment"));
+      expect(container.querySelector(".calendar-event-editing")).toBeNull();
+    } finally { await cleanupRender(root, container); }
+  });
+
+  it("invalidates color preview on confirmation conflict without silently choosing or saving another color", async () => {
+    const { container, root, fetchMock } = await renderAndLogin("ADMIN", 1280);
+    try {
+      await clickButton(container, "Admin");
+      await clickButton(container, "Reassign");
+      fetchMock.mockImplementationOnce(() => Promise.resolve(new Response(JSON.stringify({
+        message: "Staff colors changed. Preview again before confirming.",
+      }), { status: 409 })));
+      await clickButton(container, "Confirm use");
+      expect(container.querySelector(".staff-color-preview")).toBeNull();
+      expect(container.querySelector("dialog")?.textContent).toContain("Preview again");
+      expect(container.querySelector(".staff-color-swatch")?.getAttribute("style")).toContain("rgb(96, 165, 250)");
+    } finally { await cleanupRender(root, container); }
   });
 
   it("applies slot click autofill and exits editing mode back to create intent", async () => {
@@ -2493,6 +2625,8 @@ describe("App interaction seams", () => {
     expect(cancelledCalendarEvent?.textContent).toContain("Morgan");
     expect(cancelledCalendarEvent?.textContent).toContain("Cancelled");
 
+    expect(container.querySelector(".day-agenda")).toBeNull();
+    await clickButton(container, "Today agenda");
     const cancelledAgendaItem = container.querySelector(
       ".agenda-item.agenda-item-cancelled",
     );

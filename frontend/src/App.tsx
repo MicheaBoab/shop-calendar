@@ -56,6 +56,11 @@ import {
 } from './calendar-ui-logic';
 import { useI18n } from './i18n/i18n';
 import type { MessageKey } from './i18n/messages';
+import {
+  CALENDAR_EVENT_BACKGROUND_DARK,
+  CALENDAR_EVENT_EMPLOYEE_TINT,
+  CALENDAR_EVENT_TEXT_LIGHT,
+} from '../../shared/calendar-colors';
 
 interface UserSummary {
   id: string;
@@ -164,7 +169,7 @@ interface AuditLogsResponse {
 type MessageTone = 'info' | 'success' | 'error';
 type ReadErrorKey = 'users' | 'appointments' | 'calendarWindow' | 'auditLogs' | 'shopNames';
 type UserStatusValue = 'ACTIVE' | 'INACTIVE';
-type AdminPanel = 'calendar' | 'overview' | 'admin' | 'logs';
+type AdminPanel = 'calendar' | 'agenda' | 'overview' | 'admin' | 'logs';
 type TodayAgendaMode = 'time' | 'employee';
 type CalendarView = 'timeGridWeek' | 'timeGridThreeDay' | 'timeGridDay';
 type UserRoleValue = 'ADMIN' | 'EMPLOYEE' | 'MANAGER' | 'SHOP_ACCOUNT';
@@ -272,9 +277,6 @@ const createInitialForm = (): AppointmentFormState => {
     note: '',
   };
 };
-const CALENDAR_EVENT_BACKGROUND_DARK = '#0f172a';
-const CALENDAR_EVENT_TEXT_LIGHT = '#f8fafc';
-const CALENDAR_EVENT_EMPLOYEE_TINT = 28;
 const CALENDAR_PENDING_EVENT_TINT = 20;
 const CANCELLED_APPOINTMENT_ACCENT = '#94a3b8';
 const CANCELLED_APPOINTMENT_BACKGROUND = 'rgba(71, 85, 105, 0.78)';
@@ -713,11 +715,14 @@ function App() {
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [adminUsers, setAdminUsers] = useState<UserRecord[]>([]);
   const [colorPreview, setColorPreview] = useState<{
-    userId: string; currentColor: string; candidateColor: string;
+    userId: string; currentColor: string; candidateColor: string; previewToken: string;
+    seen: string[]; exhausted: boolean;
   } | null>(null);
+  const colorPreviewRequestRef = useRef(0);
   const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
   const [form, setForm] = useState<AppointmentFormState>(() => createInitialForm());
   const [editingId, setEditingId] = useState<string | null>(null);
+  const editRequestRef = useRef(0);
   const originalEditingStartAtRef = useRef<Date | null>(null);
   const appointmentStartTimeEditedRef = useRef(false);
   const [startTimeError, setStartTimeError] = useState<MessageKey | null>(null);
@@ -784,6 +789,7 @@ function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   // Calendar browse anchor only; appointment slot clicks edit the draft, not this date.
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [overviewDate, setOverviewDate] = useState<Date>(() => new Date());
   const [todayAgendaMode, setTodayAgendaMode] = useState<TodayAgendaMode>('time');
   const [employeeDropdownOpen, setEmployeeDropdownOpen] = useState(false);
   const [shopSelection, setShopSelection] = useState<{
@@ -1839,13 +1845,29 @@ function App() {
     }
   };
 
+  const navigatePanel = (panel: AdminPanel) => {
+    if (panel === adminPanel) return;
+    editRequestRef.current += 1;
+    colorPreviewRequestRef.current += 1;
+    setEditingId(null);
+    setForm(createInitialForm());
+    originalEditingStartAtRef.current = null;
+    appointmentStartTimeEditedRef.current = false;
+    clearStartTimeError();
+    phoneNameEditedRef.current = false;
+    phoneNoteEditedRef.current = false;
+    setColorPreview(null);
+    setAdminPanel(panel);
+  };
+
   const handleEdit = async (appointment: AppointmentRecord) => {
+    const requestId = ++editRequestRef.current;
     const requestAuth = authRef.current;
     try {
       const groupMembers = appointment.groupId
         ? ((await fetchJson(`/appointments?groupId=${appointment.groupId}`)) as AppointmentRecord[])
         : [appointment];
-      if (!isSameShopContext(requestAuth)) {
+      if (!isSameShopContext(requestAuth) || requestId !== editRequestRef.current) {
         return;
       }
       phoneNameEditedRef.current = true;
@@ -1854,6 +1876,9 @@ function App() {
       appointmentStartTimeEditedRef.current = false;
       clearStartTimeError();
       setEditingId(appointment.id);
+      setAdminPanel('calendar');
+      setSelectedDate(new Date(appointment.startAt));
+      calendarRef.current?.getApi().gotoDate(new Date(appointment.startAt));
       const editingPrice = appointment.price.replace(/\.00$/, '');
       setOriginalEditingPrice(editingPrice);
       setNotice(t('notices.editingExisting'), 'info');
@@ -2010,17 +2035,33 @@ function App() {
 
   const handlePreviewUserColor = async (userId: string) => {
     if (!auth || !isAdminRole(auth.user.role)) return;
-    setColorPreview(null);
+    const requestId = ++colorPreviewRequestRef.current;
+    const previous = colorPreview?.userId === userId ? colorPreview : null;
+    const seen = previous?.seen ?? [];
     setLoading(true);
     try {
-      const data = await fetchJson(`/users/${userId}/color-preview`);
-      if (!isSameShopContext(auth)) return;
+      const query = seen.length ? `?excluded=${encodeURIComponent(seen.join(','))}` : '';
+      const data = await fetchJson(`/users/${userId}/color-preview${query}`);
+      if (!isSameShopContext(auth) || requestId !== colorPreviewRequestRef.current) return;
+      if (data?.exhausted === true && data.candidateColor === null) {
+        if (previous) {
+          setColorPreview({ ...previous, exhausted: true });
+          return;
+        }
+        throw new Error(t('admin.colorsUnavailable'));
+      }
       if (!data || !/^#[0-9a-f]{6}$/.test(data.currentColor) || !/^#[0-9a-f]{6}$/.test(data.candidateColor)) {
         throw new Error(t('admin.colorFailed'));
       }
-      setColorPreview({ userId, currentColor: data.currentColor, candidateColor: data.candidateColor });
+      if (typeof data.previewToken !== 'string' || !data.previewToken || seen.includes(data.candidateColor)) {
+        throw new Error(t('admin.colorFailed'));
+      }
+      setColorPreview({ userId, currentColor: data.currentColor, candidateColor: data.candidateColor,
+        previewToken: data.previewToken, seen: [...seen, data.candidateColor], exhausted: false });
     } catch (error) {
-      if (isSameShopContext(auth)) showOperationError(getDisplayError(error, t('admin.colorFailed')));
+      if (isSameShopContext(auth) && requestId === colorPreviewRequestRef.current) {
+        showOperationError(getDisplayError(error, t('admin.colorFailed')));
+      }
     } finally { setLoading(false); }
   };
 
@@ -2030,7 +2071,8 @@ function App() {
     try {
       await fetchJson(`/users/${colorPreview.userId}/color`, {
         method: 'PATCH',
-        body: JSON.stringify({ currentColor: colorPreview.currentColor, candidateColor: colorPreview.candidateColor }),
+        body: JSON.stringify({ currentColor: colorPreview.currentColor, candidateColor: colorPreview.candidateColor,
+          previewToken: colorPreview.previewToken }),
       });
       if (!isSameShopContext(auth)) return;
       setColorPreview(null);
@@ -2281,6 +2323,7 @@ function App() {
     if (!allowCalendarStart(info.date)) {
       return;
     }
+    editRequestRef.current += 1;
     setEditingId(null);
     originalEditingStartAtRef.current = null;
     appointmentStartTimeEditedRef.current = false;
@@ -2567,24 +2610,22 @@ function App() {
   }, [auth, editingId, form.phone, phoneLookupRetry, t]);
 
   const todaySummary = useMemo(() => {
-    const now = new Date();
     const todayAppointments = appointments.filter((appointment) => {
       const startAt = new Date(appointment.startAt);
-      return startAt.getFullYear() === now.getFullYear()
-        && startAt.getMonth() === now.getMonth()
-        && startAt.getDate() === now.getDate();
+      return isSameLocalDate(startAt, overviewDate);
     });
     const sortedAppointments = [...todayAppointments].sort((left, right) => new Date(left.startAt).getTime() - new Date(right.startAt).getTime());
     const nextAppointment = sortedAppointments[0] ?? null;
     const revenue = todayAppointments.reduce((sum, appointment) => sum + Number(appointment.price), 0);
 
     return {
-      label: formatDateOnlyForDisplay(now, locale),
+      label: formatDateOnlyForDisplay(overviewDate, locale),
+      appointments: sortedAppointments,
       count: todayAppointments.length,
       revenue,
       nextAppointment,
     };
-  }, [appointments, locale]);
+  }, [appointments, locale, overviewDate]);
 
   const selectedDateLabel = useMemo(() => {
     return formatDateOnlyForDisplay(selectedDate, locale);
@@ -2701,11 +2742,14 @@ function App() {
     const actualEndAt = eventContent.event.extendedProps.actualEndAt;
     const end = actualEndAt ? eventContent.event.end : null;
     return (
+      <>
+      {eventContent.event.id === editingId ? <span className="calendar-editing-badge">{t('calendar.editing')}</span> : null}
       <CalendarEventBox start={start} end={end} locale={locale}
         title={eventContent.event.title} note={note}
         cancelledLabel={isCancelled ? t('status.cancelled') : undefined} />
+      </>
     );
-  }, [t, locale]);
+  }, [t, locale, editingId]);
 
   const calendarNoteTooltipText = useMemo<CalendarNoteTooltipText>(() => ({
     closeButtonLabel: t('tooltip.close'),
@@ -2754,6 +2798,7 @@ function App() {
         const classNames = [
           isPendingAssignment ? 'calendar-event-pending-assignment' : 'calendar-event-assigned',
           isCancelled ? 'calendar-event-cancelled' : '',
+          appointment.id === editingId ? 'calendar-event-editing' : '',
         ].filter(Boolean);
         return {
           id: appointment.id,
@@ -2781,7 +2826,7 @@ function App() {
           },
         };
       });
-  }, [filteredAppointments, getAppointmentColor, getAppointmentDisplayName, isAppointmentTentative]);
+  }, [filteredAppointments, getAppointmentColor, getAppointmentDisplayName, isAppointmentTentative, editingId]);
 
   const primaryCalendarControl = getPrimaryCalendarControl(isMobileCalendarLayout);
   const primaryCalendarControlLabel = primaryCalendarControl.view === 'timeGridThreeDay'
@@ -2884,7 +2929,8 @@ function App() {
   const isManager = isManagerRole(auth.user.role);
   const canViewOverviewAndLogs = isAdmin || isManager;
   const canSwitchShop = canSwitchShopRole(auth.user.role);
-  const showCalendarPanel = !canViewOverviewAndLogs || adminPanel === 'calendar';
+  const showCalendarPanel = adminPanel === 'calendar';
+  const showAgendaPanel = adminPanel === 'agenda';
   const showOverviewPanel = canViewOverviewAndLogs && adminPanel === 'overview';
   const showAdminPanel = isAdmin && adminPanel === 'admin';
   const showLogsPanel = canViewOverviewAndLogs && adminPanel === 'logs';
@@ -2996,42 +3042,53 @@ function App() {
 
       {message ? <p className={`message ${messageTone}`}>{message}</p> : null}
 
-      {canViewOverviewAndLogs ? (
-        <div className="panel-tabs" role="tablist" aria-label="Dashboard sections">
+      {(
+        <div className="panel-tabs" role="tablist" aria-label={t('tabs.sections')}>
           <button
             type="button"
+            role="tab"
             className={adminPanel === 'calendar' ? 'active' : ''}
             aria-selected={adminPanel === 'calendar'}
-            onClick={() => setAdminPanel('calendar')}
+            onClick={() => navigatePanel('calendar')}
           >
             {t('tabs.calendar')}
           </button>
+          <button type="button" role="tab"
+            className={adminPanel === 'agenda' ? 'active' : ''}
+            aria-selected={adminPanel === 'agenda'} onClick={() => navigatePanel('agenda')}>
+            {t('agenda.title')}
+          </button>
+          {canViewOverviewAndLogs ? <>
           <button
             type="button"
+            role="tab"
             className={adminPanel === 'overview' ? 'active' : ''}
             aria-selected={adminPanel === 'overview'}
-            onClick={() => setAdminPanel('overview')}
+            onClick={() => navigatePanel('overview')}
           >
             {t('tabs.overview')}
           </button>
           {isAdmin ? <button
             type="button"
+            role="tab"
             className={adminPanel === 'admin' ? 'active' : ''}
             aria-selected={adminPanel === 'admin'}
-            onClick={() => setAdminPanel('admin')}
+            onClick={() => navigatePanel('admin')}
           >
             {t('tabs.admin')}
           </button> : null}
           <button
             type="button"
+            role="tab"
             className={adminPanel === 'logs' ? 'active' : ''}
             aria-selected={adminPanel === 'logs'}
-            onClick={() => setAdminPanel('logs')}
+            onClick={() => navigatePanel('logs')}
           >
             {t('tabs.logs')}
           </button>
+          </> : null}
         </div>
-      ) : null}
+      )}
 
       {showCalendarPanel ? (
         <>
@@ -3331,6 +3388,7 @@ function App() {
                 <div className="row">
                   <button type="submit" disabled={loading || isSelectedAppointmentCancelled}>{editingId ? t('actions.updateAppointment') : t('actions.createAppointment')}</button>
                   {editingId ? <button type="button" onClick={() => {
+                    editRequestRef.current += 1;
                     setEditingId(null);
                     setForm(createInitialForm());
                     originalEditingStartAtRef.current = null;
@@ -3468,7 +3526,13 @@ function App() {
                   }}
                 />
               </CalendarFrame>
-              <div className="day-agenda" aria-live="polite">
+            </section>
+          </div>
+        </>
+      ) : null}
+
+      {showAgendaPanel ? (
+              <section className="card day-agenda" aria-live="polite">
                 <div className="agenda-header">
                   <h3>{t('agenda.title')}</h3>
                   <div className="toggle-row agenda-mode-toggle" role="group" aria-label={t('agenda.modeAria')}>
@@ -3545,18 +3609,21 @@ function App() {
                     ))}
                   </div>
                 )}
-              </div>
-            </section>
-          </div>
-        </>
+              </section>
       ) : null}
 
       {showOverviewPanel ? (
         <section className="card desktop-day-overview">
           <div className="day-summary">
             <div>
-              <h2>{t('overview.title')}</h2>
+              <h2>{isSameLocalDate(overviewDate, new Date()) ? t('overview.title') : t('overview.dateTitle', { value: todaySummary.label })}</h2>
               <p className="hint">{todaySummary.label}</p>
+              <NativeDateChooser value={formatDateForUsInput(overviewDate)}
+                triggerContent={todaySummary.label} accessibleLabel={t('overview.chooseDate')}
+                onChange={(value) => { const date = parseUsDateInput(value); if (date) setOverviewDate(date); }}
+                onError={(error) => showOperationError(t('editor.datePickerFailed', {
+                  error: error instanceof Error ? error.message : String(error),
+                }))} />
             </div>
             <div className="day-summary-grid">
               <div className="summary-pill">
@@ -3573,9 +3640,9 @@ function App() {
               </div>
             </div>
           </div>
-          <h3 className="section-title">{t('overview.todayAppointments')}</h3>
+          <h3 className="section-title">{isSameLocalDate(overviewDate, new Date()) ? t('overview.todayAppointments') : t('overview.dateAppointments', { value: todaySummary.label })}</h3>
           <div className="appointment-list">
-            {appointments.map((appointment) => {
+            {todaySummary.appointments.map((appointment) => {
               const displayName = getAppointmentDisplayName(appointment);
               const accentColor = getAppointmentColor(appointment);
               const isCancelled = isCancelledAppointment(appointment);
@@ -3758,20 +3825,32 @@ function App() {
               {manageableUsers.filter((user) => user.role.toUpperCase() === 'EMPLOYEE').map((user) => (
                 <div className="staff-color-card" key={user.id}>
                   <strong>{user.displayName}</strong>
+                  <div className="staff-color-comparison">
                   <span className="staff-color-sample">
-                    <span className="staff-color-swatch" style={{ backgroundColor: user.color }} aria-hidden="true" />
-                    {t('admin.currentColor')}: {user.color}
+                    <span className="staff-color-swatch"
+                      style={{ backgroundColor: colorPreview?.userId === user.id ? colorPreview.currentColor : user.color }}
+                      role="img" aria-label={`${user.displayName} ${t('admin.currentColor')}`} />
+                    {t('admin.currentColor')}
                   </span>
-                  <button type="button" disabled={loading} onClick={() => void handlePreviewUserColor(user.id)}>
-                    {t('admin.previewColor')}
-                  </button>
-                  {colorPreview?.userId === user.id ? <div className="staff-color-preview">
-                    <span className="staff-color-sample">
-                      <span className="staff-color-swatch" style={{ backgroundColor: colorPreview.candidateColor }} aria-hidden="true" />
-                      {t('admin.candidateColor')}: {colorPreview.candidateColor}
+                  {colorPreview?.userId === user.id ? <>
+                    <span className="staff-color-arrow" aria-hidden="true">→</span>
+                    <span className="staff-color-sample staff-color-candidate">
+                      <span className="staff-color-swatch" style={{ backgroundColor: colorPreview.candidateColor }}
+                        role="img" aria-label={`${user.displayName} ${t('admin.candidateColor')}`} />
+                      {t('admin.candidateColor')}
                     </span>
+                  </> : null}
+                  </div>
+                  {colorPreview?.userId !== user.id ? <button type="button" disabled={loading} onClick={() => void handlePreviewUserColor(user.id)}>
+                    {t('admin.previewColor')}
+                  </button> : null}
+                  {colorPreview?.userId === user.id ? <div className="staff-color-preview">
+                    {colorPreview.exhausted ? <p role="status" className="hint">{t('admin.colorsExhausted')}</p> : null}
+                    <div className="staff-color-preview-actions">
+                    <button type="button" disabled={loading || colorPreview.exhausted} onClick={() => void handlePreviewUserColor(user.id)}>{t('admin.anotherColor')}</button>
                     <button type="button" disabled={loading} onClick={() => void handleConfirmUserColor()}>{t('admin.confirmColor')}</button>
-                    <button type="button" disabled={loading} onClick={() => setColorPreview(null)}>{t('actions.cancel')}</button>
+                    <button type="button" disabled={loading} onClick={() => { colorPreviewRequestRef.current += 1; setColorPreview(null); }}>{t('actions.cancel')}</button>
+                    </div>
                   </div> : null}
                 </div>
               ))}

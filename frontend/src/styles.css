@@ -101,6 +101,20 @@ button, input, select, textarea { font: inherit; }
 .staff-color-sample { display: flex; align-items: center; gap: 8px; }
 .staff-color-swatch { display: inline-block; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 5px; }
 .staff-color-preview { display: grid; gap: 8px; }
+.staff-color-comparison { display: flex; align-items: center; gap: 8px; }
+.staff-color-arrow { font-size: 1.4rem; }
+.staff-color-preview-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.fc .fc-timegrid-event.calendar-event-editing {
+  outline: 2px solid #f8fafc;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px #2563eb;
+}
+.calendar-editing-badge {
+  flex-shrink: 0;
+  display: block; width: fit-content; max-width: 100%;
+  font-size: 10px; line-height: 1.2; font-weight: 700;
+  background: #1e3a8a; color: #fff; border-radius: 3px; padding: 1px 3px;
+}
 
 .app-shell { max-width: 1600px; margin: 0 auto; padding: 14px 18px; }
 .topbar, .card {
@@ -140,7 +154,7 @@ button, input, select, textarea { font: inherit; }
   color: var(--text-muted);
   font-size: 0.85rem;
 }
-.panel-tabs { display: inline-flex; gap: 8px; margin-bottom: 12px; }
+.panel-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .panel-tabs button { min-width: 120px; padding: 8px 12px; }
 .dashboard-grid { display: grid; gap: 10px; grid-template-columns: minmax(300px, 0.8fr) minmax(760px, 2.2fr); align-items: stretch; }
 .dashboard-card {
@@ -766,6 +780,10 @@ body.theme-dark .native-date-panel input[type="date"] { color-scheme: dark; }
 .fc .fc-timegrid-event {
   position: absolute;
 }
+.fc .fc-event.calendar-event-assigned {
+  border-left-width: 4px !important;
+  border-left-style: solid;
+}
 .fc .fc-timegrid-event .fc-event-main-frame,
 .fc .fc-timegrid-event .fc-event-main {
   container-type: size;
@@ -837,6 +855,7 @@ body.theme-dark .native-date-panel input[type="date"] { color-scheme: dark; }
   max-width: 100%;
   overflow: hidden;
 }
+.fc .calendar-event-editing .calendar-event-content { flex: 1; height: auto; }
 .fc .calendar-event-time {
   font-size: min(0.74rem, 40cqh, 20cqw);
   line-height: 1.1;

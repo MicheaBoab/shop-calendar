@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -19,6 +20,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { ReassignUserColorDto } from './dto/reassign-user-color.dto';
+import { PreviewUserColorDto } from './dto/preview-user-color.dto';
 
 type AuthenticatedRequest = Request & {
   user: {
@@ -52,8 +54,8 @@ export class UsersController {
 
   @Get(':id/color-preview')
   @Roles(UserRole.ADMIN)
-  previewUserColor(@Param('id') id: string) {
-    return this.usersService.previewUserColor(id);
+  previewUserColor(@Param('id') id: string, @Query() query: PreviewUserColorDto) {
+    return this.usersService.previewUserColor(id, query.excluded?.split(',') ?? []);
   }
 
   @Patch(':id/color')

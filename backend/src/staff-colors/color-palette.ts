@@ -1,5 +1,10 @@
 // CIELAB Euclidean distance (Delta E 76), not CIEDE2000.
 // These are accents on a dark background, not backgrounds for white text.
+import {
+  CALENDAR_EVENT_BACKGROUND_DARK,
+  CALENDAR_EVENT_EMPLOYEE_TINT,
+} from '../../../shared/calendar-colors';
+
 export const BASE_COLORS = [
   '#60a5fa',
   '#fb923c',
@@ -59,6 +64,26 @@ export function colorDistance(a: string, b: string) {
   return Math.hypot(...left.map((v, i) => v - right[i]));
 }
 
+export function calendarEventColor(employeeColor: string) {
+  const color = normalizeColor(employeeColor);
+  const background = CALENDAR_EVENT_BACKGROUND_DARK;
+  const tint = CALENDAR_EVENT_EMPLOYEE_TINT / 100;
+  return `#${[1, 3, 5]
+    .map((offset) =>
+      Math.round(
+        parseInt(background.slice(offset, offset + 2), 16) * (1 - tint) +
+          parseInt(color.slice(offset, offset + 2), 16) * tint,
+      )
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`;
+}
+
+export function renderedColorDistance(a: string, b: string) {
+  return colorDistance(calendarEventColor(a), calendarEventColor(b));
+}
+
 export const COLOR_CANDIDATES = [
   ...new Set([
     ...BASE_COLORS,
@@ -68,6 +93,7 @@ export const COLOR_CANDIDATES = [
   ]),
 ].filter((hex) => (luminance(hex) + 0.05) / (luminance('#0f172a') + 0.05) >= 3);
 
+// Applied after the employee accent is mixed into the shared dark card background.
 export const PREFERRED_DISTANCE = 20;
 
 // Six separated anchors, not six hard hue sectors. Yellow/lime share a family;
@@ -140,23 +166,22 @@ export function colorFamily(color: string): number | null {
   );
 }
 
-export function chooseColor(used: string[], pending: string) {
+export function chooseColor(used: string[], pending: string, excluded: string[] = []) {
   const normalizedPending = normalizeColor(pending);
   const normalizedUsed = used.map(normalizeColor);
   const reserved = new Set([...normalizedUsed, normalizedPending]);
   const references = [...reserved];
-  const referenceLabs = references.map(lab);
+  const renderedReferences = references.map(calendarEventColor);
+  const skipped = new Set(excluded);
   const score = (color: string) => {
-    const current = lab(color);
+    const current = calendarEventColor(color);
     return Math.min(
-      ...referenceLabs.map((other) => {
-        return Math.hypot(...current.map((v, i) => v - other[i]));
-      }),
+      ...renderedReferences.map((other) => colorDistance(current, other)),
     );
   };
   const best = (candidates: string[]) =>
     candidates
-      .filter((c) => !reserved.has(c))
+      .filter((c) => !reserved.has(c) && !skipped.has(c))
       .reduce<{ color: string; distance: number } | null>((winner, color) => {
         const distance = score(color);
         return !winner || distance > winner.distance
