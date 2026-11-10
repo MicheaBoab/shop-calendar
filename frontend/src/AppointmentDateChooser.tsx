@@ -12,17 +12,24 @@ export function AppointmentDateChooser({ value, onChange }: {
   const id = useId();
   const host = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+  const internalPointer = useRef(false);
   const [open, setOpen] = useState(false);
   const [month, setMonth] = useState(() => parseUsDateInput(value) ?? new Date());
-  const close = () => { setOpen(false); trigger.current?.focus(); };
+  const close = () => { internalPointer.current = false; setOpen(false); trigger.current?.focus(); };
   useEffect(() => {
     if (!open) return;
     host.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus();
     const outside = (event: PointerEvent) => {
-      if (!host.current?.contains(event.target as Node)) setOpen(false);
+      if (!host.current?.contains(event.target as Node)) {
+        internalPointer.current = false;
+        setOpen(false);
+      }
     };
     document.addEventListener('pointerdown', outside);
-    return () => document.removeEventListener('pointerdown', outside);
+    return () => {
+      internalPointer.current = false;
+      document.removeEventListener('pointerdown', outside);
+    };
   }, [open]);
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const start = new Date(first);
@@ -30,8 +37,15 @@ export function AppointmentDateChooser({ value, onChange }: {
   const days = Array.from({ length: 42 }, (_, index) =>
     new Date(start.getFullYear(), start.getMonth(), start.getDate() + index));
   return <div ref={host} className="appointment-date-chooser"
+    onPointerDownCapture={() => { internalPointer.current = true; }}
+    onPointerCancelCapture={() => { internalPointer.current = false; }}
+    onClickCapture={() => { internalPointer.current = false; }}
+    onKeyDownCapture={() => { internalPointer.current = false; }}
     onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } }}
     onBlur={(event) => {
+      // Safari can blur the focused day to null before an internal touch click.
+      // Keep the buttons mounted until click; keyboard/outside focus still closes.
+      if (!event.relatedTarget && internalPointer.current) return;
       if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
     }}>
     <button ref={trigger} type="button" aria-expanded={open} aria-controls={id}
